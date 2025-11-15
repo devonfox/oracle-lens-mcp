@@ -6,7 +6,8 @@ A Model Context Protocol (MCP) server for Magic: The Gathering oracle card searc
 
 - **Oracle Card Search**: Search all MTG cards using Scryfall-like syntax
 - **Collection Management**: Search and manage your personal MTG collection
-- **Automatic Data Loading**: Load Oracle Cards from Scryfall bulk data API
+- **Dual Dataset Support**: Load both Oracle Cards (rules-based) and Default Cards
+  (printing-based) from Scryfall bulk data API
 - **Collection Import**: Import collections from MTGGoldfish format (coming soon)
 
 ## Setup
@@ -17,13 +18,13 @@ A Model Context Protocol (MCP) server for Magic: The Gathering oracle card searc
 npm install
 ```
 
-2. Build the project:
+1. Build the project:
 
 ```bash
 npm run build
 ```
 
-3. Run the server:
+1. Run the server:
 
 The server supports two transport modes:
 
@@ -51,7 +52,8 @@ MCP_PORT=3000 npm run dev
 
 ### Stdio Mode (Default)
 
-Stdio mode is designed for use with MCP clients that communicate via standard input/output. This is the default mode when `MCP_PORT` is not set.
+Stdio mode is designed for use with MCP clients that communicate via standard
+input/output. This is the default mode when `MCP_PORT` is not set.
 
 **Use Cases:**
 
@@ -71,7 +73,8 @@ The server will communicate via stdin/stdout. No network port is exposed.
 
 ### HTTP Mode
 
-HTTP mode exposes the server as an HTTP endpoint using the MCP Streamable HTTP protocol. This allows remote clients to connect over the network.
+HTTP mode exposes the server as an HTTP endpoint using the MCP Streamable HTTP
+protocol. This allows remote clients to connect over the network.
 
 **Use Cases:**
 
@@ -142,6 +145,7 @@ The HTTP server implements the MCP Streamable HTTP protocol:
    ```
 
 4. **Terminate Session** - Send a DELETE request to close the session:
+
    ```bash
    curl -X DELETE http://localhost:3000/mcp \
      -H "Mcp-Session-Id: YOUR_SESSION_ID"
@@ -155,25 +159,35 @@ The HTTP server implements the MCP Streamable HTTP protocol:
 
 ## Database Setup
 
-The server uses SQLite with Drizzle ORM. The database will be automatically created at `db/mtg.db` on first run, and tables will be created automatically if migrations don't exist.
+The server uses SQLite with Drizzle ORM. The database will be automatically
+created at `db/mtg.db` on first run, and tables will be created automatically if
+migrations don't exist.
 
-### Loading Oracle Cards Data
+The database contains two main tables:
 
-To load the Oracle Cards database from Scryfall:
+- **oracle_cards**: One record per Oracle card (unique rules object) - used for
+  text/rules-based queries
+- **default_cards**: One record per card printing - used for set-specific and printing-level queries
+
+### Loading Data
+
+To load both Oracle Cards and Default Cards from Scryfall:
 
 ```bash
-npm run load-oracle
+npm run load-data
 ```
 
 This script will:
 
 1. Fetch the latest Oracle Cards bulk data metadata from Scryfall
-2. Download the ~160MB JSON file (gzipped)
-3. Decompress and parse the data
-4. Load all cards into the database (~36k cards)
+2. Download and load Oracle Cards (~160MB, ~36k cards)
+3. Fetch the latest Default Cards bulk data metadata from Scryfall
+4. Download and load Default Cards (~495MB, all card printings)
 5. Drop and reload existing data if run again
 
-**Note:** The first run will take several minutes to download and process the data.
+**Note:** The first run will take several minutes to download and process both
+datasets. Oracle Cards are loaded first since Default Cards reference them via
+`oracle_id`.
 
 ### Generating Migrations
 
@@ -237,24 +251,27 @@ Import a collection from MTGGoldfish format (coming soon).
 
 ## Resources
 
-- `mcp://mtg/schema/oracle_cards` - Schema documentation
+- `mcp://mtg/schema/oracle_cards` - Schema documentation for oracle_cards table
 - `mcp://mtg/collection/summary` - Collection summary
 
 ## Configuration
 
 ### Environment Variables
 
-| Variable   | Description                                                       | Default             |
-| ---------- | ----------------------------------------------------------------- | ------------------- |
-| `MCP_PORT` | Port number for HTTP mode. If not set, server runs in stdio mode. | (none - stdio mode) |
-| `DB_PATH`  | Path to SQLite database file                                      | `db/mtg.db`         |
+| Variable   | Description                                                       | Default        |
+| ---------- | ----------------------------------------------------------------- | -------------- |
+| `MCP_PORT` | Port number for HTTP mode. If not set, server runs in stdio mode. | (none - stdio) |
+| `DB_PATH`  | Path to SQLite database file                                      | `db/mtg.db`    |
 
 ### Transport Mode Selection
 
-The server automatically selects the transport based on the `MCP_PORT` environment variable:
+The server automatically selects the transport based on the `MCP_PORT`
+environment variable:
 
-- **Stdio Mode** (default): Used when `MCP_PORT` is not set. Communicates via stdin/stdout, suitable for MCP clients like Claude Desktop.
-- **HTTP Mode**: Used when `MCP_PORT` is set. Exposes the server on the specified port using the MCP Streamable HTTP protocol.
+- **Stdio Mode** (default): Used when `MCP_PORT` is not set. Communicates via
+  stdin/stdout, suitable for MCP clients like Claude Desktop.
+- **HTTP Mode**: Used when `MCP_PORT` is set. Exposes the server on the specified
+  port using the MCP Streamable HTTP protocol.
 
 **Examples:**
 
@@ -343,6 +360,7 @@ MCP_PORT=3000 npm start
 ## Project Status
 
 - [x] Implement Scryfall Oracle bulk data importer
+- [x] Implement Scryfall Default bulk data importer
 - [x] Basic search with Scryfall-like syntax
 - [x] Support for type, color, color identity, CMC, keyword, and oracle text filters
 - [x] Color name mapping (red→R, blue→U, etc.)
@@ -350,12 +368,13 @@ MCP_PORT=3000 npm start
 - [ ] Add `suggest_additions` tool
 - [ ] Enhance query parser with more Scryfall syntax (mana cost, power/toughness, etc.)
 - [ ] Add collection summary resource implementation
+- [ ] Add tools to search Default Cards (printings) by set, collector number, etc.
 
 ## Troubleshooting
 
 ### Search returns empty results
 
-- Make sure you've loaded the Oracle Cards data: `npm run load-oracle`
+- Make sure you've loaded the data: `npm run load-data`
 - Check that color filters use the correct format: `c:red` or `c:R` (not `c:Red`)
 - Keywords are case-insensitive: `k:haste` works the same as `k:Haste`
 
