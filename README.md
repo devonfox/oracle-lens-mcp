@@ -12,24 +12,146 @@ A Model Context Protocol (MCP) server for Magic: The Gathering oracle card searc
 ## Setup
 
 1. Install dependencies:
+
 ```bash
 npm install
 ```
 
 2. Build the project:
+
 ```bash
 npm run build
 ```
 
 3. Run the server:
+
+The server supports two transport modes:
+
+**Stdio Mode (default)** - For use with MCP clients like Claude Desktop:
+
 ```bash
 npm start
 ```
 
+**HTTP Mode** - For exposing the server on a network port:
+
+```bash
+MCP_PORT=3000 npm start
+```
+
 Or run in development mode:
+
 ```bash
 npm run dev
+# or for HTTP mode:
+MCP_PORT=3000 npm run dev
 ```
+
+## Usage
+
+### Stdio Mode (Default)
+
+Stdio mode is designed for use with MCP clients that communicate via standard input/output. This is the default mode when `MCP_PORT` is not set.
+
+**Use Cases:**
+
+- Claude Desktop
+- Other MCP clients that spawn processes
+- Local development and testing
+
+**Running:**
+
+```bash
+npm start
+# or
+npm run dev
+```
+
+The server will communicate via stdin/stdout. No network port is exposed.
+
+### HTTP Mode
+
+HTTP mode exposes the server as an HTTP endpoint using the MCP Streamable HTTP protocol. This allows remote clients to connect over the network.
+
+**Use Cases:**
+
+- Remote MCP clients
+- Web applications
+- Microservices architecture
+- Docker containers
+- Cloud deployments
+
+**Running:**
+
+```bash
+# Default port 3000
+MCP_PORT=3000 npm start
+
+# Custom port
+MCP_PORT=8080 npm start
+
+# Development mode
+MCP_PORT=3000 npm run dev
+```
+
+**Endpoint:**
+The server will be available at `http://localhost:PORT/mcp` (e.g., `http://localhost:3000/mcp`)
+
+**Connecting to HTTP Server:**
+
+The HTTP server implements the MCP Streamable HTTP protocol:
+
+1. **Initialize Session** - Send a POST request to `/mcp` with an `initialize` JSON-RPC message:
+
+   ```bash
+   curl -X POST http://localhost:3000/mcp \
+     -H "Content-Type: application/json" \
+     -d '{
+       "jsonrpc": "2.0",
+       "id": 1,
+       "method": "initialize",
+       "params": {
+         "protocolVersion": "2024-11-05",
+         "capabilities": {},
+         "clientInfo": {
+           "name": "example-client",
+           "version": "1.0.0"
+         }
+       }
+     }'
+   ```
+
+2. **Session ID** - The server will respond with a `Mcp-Session-Id` header. Include this header in all subsequent requests:
+
+   ```bash
+   curl -X POST http://localhost:3000/mcp \
+     -H "Content-Type: application/json" \
+     -H "Mcp-Session-Id: YOUR_SESSION_ID" \
+     -d '{
+       "jsonrpc": "2.0",
+       "id": 2,
+       "method": "tools/list"
+     }'
+   ```
+
+3. **SSE Stream** - For streaming responses, connect to the SSE endpoint:
+
+   ```bash
+   curl -N http://localhost:3000/mcp \
+     -H "Mcp-Session-Id: YOUR_SESSION_ID"
+   ```
+
+4. **Terminate Session** - Send a DELETE request to close the session:
+   ```bash
+   curl -X DELETE http://localhost:3000/mcp \
+     -H "Mcp-Session-Id: YOUR_SESSION_ID"
+   ```
+
+**Session Management:**
+
+- Each client connection gets a unique session ID
+- Sessions are automatically cleaned up when closed
+- Multiple concurrent sessions are supported
 
 ## Database Setup
 
@@ -44,6 +166,7 @@ npm run load-oracle
 ```
 
 This script will:
+
 1. Fetch the latest Oracle Cards bulk data metadata from Scryfall
 2. Download the ~160MB JSON file (gzipped)
 3. Decompress and parse the data
@@ -55,6 +178,7 @@ This script will:
 ### Generating Migrations
 
 To generate new migrations after schema changes:
+
 ```bash
 npx drizzle-kit generate
 npx drizzle-kit migrate
@@ -63,9 +187,11 @@ npx drizzle-kit migrate
 ## MCP Tools
 
 ### `oracle_search`
+
 Search all Oracle cards using Scryfall-like syntax.
 
 **Query Syntax:**
+
 - `t:enchantment` - Search by type (e.g., `t:creature`, `t:instant`)
 - `o:"draw a card"` - Search oracle text (use quotes for phrases)
 - `c:red` or `c:R` - Search by colors (maps: red→R, blue→U, black→B, white→W, green→G)
@@ -79,6 +205,7 @@ Search all Oracle cards using Scryfall-like syntax.
 You can combine multiple filters: `t:creature ci:red k:haste` finds red creatures with the haste keyword.
 
 **Examples:**
+
 ```json
 {
   "query": "t:enchantment ci:WUG",
@@ -101,9 +228,11 @@ You can combine multiple filters: `t:creature ci:red k:haste` finds red creature
 ```
 
 ### `collection_search`
+
 Same syntax as `oracle_search`, but only returns cards in your collection.
 
 ### `import_collection`
+
 Import a collection from MTGGoldfish format (coming soon).
 
 ## Resources
@@ -113,14 +242,46 @@ Import a collection from MTGGoldfish format (coming soon).
 
 ## Configuration
 
-Set the database path via environment variable:
+### Environment Variables
+
+| Variable   | Description                                                       | Default             |
+| ---------- | ----------------------------------------------------------------- | ------------------- |
+| `MCP_PORT` | Port number for HTTP mode. If not set, server runs in stdio mode. | (none - stdio mode) |
+| `DB_PATH`  | Path to SQLite database file                                      | `db/mtg.db`         |
+
+### Transport Mode Selection
+
+The server automatically selects the transport based on the `MCP_PORT` environment variable:
+
+- **Stdio Mode** (default): Used when `MCP_PORT` is not set. Communicates via stdin/stdout, suitable for MCP clients like Claude Desktop.
+- **HTTP Mode**: Used when `MCP_PORT` is set. Exposes the server on the specified port using the MCP Streamable HTTP protocol.
+
+**Examples:**
+
 ```bash
-DB_PATH=/path/to/db.db npm start
+# Stdio mode (default)
+npm start
+
+# HTTP mode on port 3000
+MCP_PORT=3000 npm start
+
+# HTTP mode on custom port
+MCP_PORT=8080 npm start
+
+# Custom database path
+DB_PATH=/custom/path/mtg.db npm start
+
+# Combine options
+MCP_PORT=3000 DB_PATH=/custom/path/mtg.db npm start
 ```
 
-## Connecting to Claude Desktop
+## Connecting MCP Clients
 
-Add to your `claude_desktop_config.json`:
+### Claude Desktop
+
+Claude Desktop uses stdio mode. Add to your `claude_desktop_config.json`:
+
+**macOS:**
 
 ```json
 {
@@ -131,6 +292,52 @@ Add to your `claude_desktop_config.json`:
     }
   }
 }
+```
+
+**Windows:**
+
+```json
+{
+  "mcpServers": {
+    "oracle-lens": {
+      "command": "node",
+      "args": ["C:\\absolute\\path\\to\\oracle-lens\\build\\index.js"]
+    }
+  }
+}
+```
+
+**Linux:**
+
+```json
+{
+  "mcpServers": {
+    "oracle-lens": {
+      "command": "node",
+      "args": ["/absolute/path/to/oracle-lens/build/index.js"]
+    }
+  }
+}
+```
+
+### Other MCP Clients (HTTP Mode)
+
+For clients that support HTTP transport, configure them to connect to your HTTP server:
+
+```json
+{
+  "mcpServers": {
+    "oracle-lens": {
+      "url": "http://localhost:3000/mcp"
+    }
+  }
+}
+```
+
+Make sure the server is running in HTTP mode:
+
+```bash
+MCP_PORT=3000 npm start
 ```
 
 ## Project Status
