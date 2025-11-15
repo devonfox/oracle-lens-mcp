@@ -1,0 +1,8 @@
+node_modules/
+build/
+db/*.db
+db/*.db-journal
+*.log
+.env
+.cursor
+temp-oracle-cards.json*
