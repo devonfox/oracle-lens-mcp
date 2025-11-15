@@ -60,6 +60,23 @@ function createTables() {
       legalities TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS default_cards (
+      id TEXT PRIMARY KEY,
+      oracle_id TEXT,
+      name TEXT NOT NULL,
+      \`set\` TEXT,
+      set_name TEXT,
+      collector_number TEXT,
+      rarity TEXT,
+      lang TEXT,
+      released_at TEXT,
+      frame TEXT,
+      border_color TEXT,
+      security_stamp TEXT,
+      data TEXT,
+      FOREIGN KEY (oracle_id) REFERENCES oracle_cards(oracle_id)
+    );
+
     CREATE TABLE IF NOT EXISTS inventory (
       oracle_id TEXT PRIMARY KEY,
       qty INTEGER NOT NULL DEFAULT 1,
@@ -71,6 +88,9 @@ function createTables() {
     CREATE INDEX IF NOT EXISTS idx_oracle_cards_name ON oracle_cards(name);
     CREATE INDEX IF NOT EXISTS idx_oracle_cards_type ON oracle_cards(type_line);
     CREATE INDEX IF NOT EXISTS idx_oracle_cards_cmc ON oracle_cards(cmc);
+    CREATE INDEX IF NOT EXISTS idx_default_cards_oracle_id ON default_cards(oracle_id);
+    CREATE INDEX IF NOT EXISTS idx_default_cards_set ON default_cards(\`set\`);
+    CREATE INDEX IF NOT EXISTS idx_default_cards_name ON default_cards(name);
   `);
   console.error("Tables created successfully");
 }
