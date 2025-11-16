@@ -323,6 +323,21 @@ Search all Oracle cards using Scryfall-like syntax.
 - **Mana Cost**: `m:` or `mana:` - Search by actual mana cost string
   - Example: `m:{R}{R}`, `mana:2WW`, `m:{G}{U}`
 
+#### Power and Toughness
+
+- **Power**: `pow:` or `power:` - Search by creature power
+
+  - Operators: `=`, `<=`, `>=`, `<`, `>`, `!=`
+  - Example: `pow:4`, `pow>=3`, `power<=2`
+  - Special: `pow>tou` or `pow>toughness` - Find creatures where power > toughness
+  - Note: Only numeric values are compared (cards with `*`, `?`, etc. are excluded)
+
+- **Toughness**: `tou:` or `toughness:` - Search by creature toughness
+
+  - Operators: `=`, `<=`, `>=`, `<`, `>`, `!=`
+  - Example: `tou:5`, `toughness>=4`, `tou<=3`
+  - Note: Only numeric values are compared (cards with `*`, `?`, etc. are excluded)
+
 #### Format Legality
 
 - **Format**: `f:` or `format:` - Find cards legal in a format
@@ -398,6 +413,20 @@ Search all Oracle cards using Scryfall-like syntax.
 {
   "query": "m:{R}{R} cmc<=4 t:creature",
   "limit": 15
+}
+```
+
+```json
+{
+  "query": "ci:wbg pow>=4",
+  "limit": 10
+}
+```
+
+```json
+{
+  "query": "ci:wbg pow>tou",
+  "limit": 10
 }
 ```
 
@@ -529,11 +558,13 @@ MCP_PORT=3000 npm start
 - [x] Support for guild/shard/wedge color names (azorius, esper, etc.)
 - [x] Support for complex query logic (AND, OR, NOT, parentheses)
 - [x] Support for CMC even/odd and additional operators (`!=`)
+- [x] Support for power/toughness queries (numeric comparisons and `pow>tou`)
+- [x] HTTP transport mode with session management
+- [x] Stdio transport mode for local MCP clients
 - [ ] Implement MTGGoldfish collection importer
 - [ ] Add `suggest_additions` tool
 - [ ] Add collection summary resource implementation
 - [ ] Add tools to search Default Cards (printings) by set, collector number, etc.
-- [ ] Add support for power/toughness queries (requires Default Cards data)
 - [ ] Add support for rarity queries (requires Default Cards data)
 
 ## Troubleshooting
@@ -585,3 +616,11 @@ MCP_PORT=3000 npm start
 - Check that color filters use the correct format: `c:red` or `c:R` (not `c:Red`)
 - Keywords are case-insensitive: `k:haste` works the same as `k:Haste`
 - Verify your database has data: `psql mtg -c "SELECT COUNT(*) FROM oracle_cards;"`
+- Power/toughness queries only match numeric values (cards with `*`, `?`, etc. are excluded)
+
+### HTTP 400 Bad Request errors
+
+- Make sure the server is running: `MCP_PORT=3000 npm start`
+- Check that you're sending requests to the correct endpoint: `http://localhost:3000/mcp`
+- For HTTP mode, ensure you send an `initialize` request first to create a session
+- The server will auto-create sessions for tool calls with non-existent session IDs (useful after server restarts)
