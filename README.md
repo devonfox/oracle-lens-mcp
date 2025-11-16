@@ -206,19 +206,93 @@ Search all Oracle cards using Scryfall-like syntax.
 
 **Query Syntax:**
 
-- `t:enchantment` - Search by type (e.g., `t:creature`, `t:instant`)
-- `o:"draw a card"` - Search oracle text (use quotes for phrases)
-- `c:red` or `c:R` - Search by colors (maps: red→R, blue→U, black→B, white→W, green→G)
-- `ci:WUG` or `ci:red` - Search by color identity (same color mapping)
-- `cmc<=3` - Search by converted mana cost (less than or equal)
-- `cmc>=5` - Search by converted mana cost (greater than or equal)
-- `k:haste` - Search by keyword (e.g., `k:lifelink`, `k:haste`)
-- Plain text - Searches card name and oracle text
+#### Basic Fields
 
-**Combining Filters:**
-You can combine multiple filters: `t:creature ci:red k:haste` finds red creatures with the haste keyword.
+- **Name**: `n:` or `name:` - Search card names
 
-**Examples:**
+  - Example: `n:Lightning`, `name:Bolt`
+
+- **Type**: `t:` or `type:` - Search by card type
+
+  - Example: `t:creature`, `t:enchantment`, `t:legendary`
+
+- **Oracle Text**: `o:` or `oracle:` - Search oracle text
+
+  - Example: `o:"draw a card"`, `o:destroy` (use quotes for phrases)
+
+- **Keywords**: `k:`, `kw:`, or `keyword:` - Search by keyword ability
+  - Example: `k:haste`, `kw:flying`, `keyword:lifelink`
+
+#### Colors and Color Identity
+
+- **Colors**: `c:`, `color:`, or `colors:` - Search by card colors
+
+  - Supports: `c:red`, `c:R`, `c:WUBRG`
+  - Operators: `=`, `<=` (subset), `>=` (superset), `!=` (not equal)
+  - Example: `c:red`, `c>=W`, `c<=WUG`
+
+- **Color Identity**: `ci:`, `id:`, `identity:`, or `color_identity:` - Search by color identity
+
+  - Same syntax as colors
+  - Example: `ci:WUG`, `id:esper`, `identity<=azorius`
+
+- **Named Color Combinations** (guilds, shards, wedges, etc.):
+
+  - Guilds: `azorius`, `dimir`, `rakdos`, `gruul`, `selesnya`, `orzhov`, `izzet`, `golgari`, `boros`, `simic`
+  - Shards: `bant`, `esper`, `grixis`, `jund`, `naya`
+  - Wedges: `abzan`, `jeskai`, `sultai`, `mardu`, `temur`
+  - Four-color: `chaos`, `aggression`, `altruism`, `growth`, `artifice`
+  - Colleges: `quandrix`, `silverquill`, `witherbloom`, `prismari`, `lorehold`
+  - Example: `c:esper`, `ci<=azorius`, `id:bant`
+
+- **Special Values**: `c:colorless` or `c:c` for colorless, `c:multicolor` or `c:m` for multicolor
+
+#### Mana Costs
+
+- **Converted Mana Cost**: `cmc:`, `mv:`, or `manavalue:` - Search by mana value
+
+  - Operators: `=`, `<=`, `>=`, `<`, `>`, `!=`
+  - Special values: `cmc:even`, `cmc:odd`
+  - Example: `cmc:3`, `cmc<=2`, `mv>=5`, `cmc:even`
+
+- **Mana Cost**: `m:` or `mana:` - Search by actual mana cost string
+  - Example: `m:{R}{R}`, `mana:2WW`, `m:{G}{U}`
+
+#### Format Legality
+
+- **Format**: `f:` or `format:` - Find cards legal in a format
+
+  - Example: `f:modern`, `f:commander`, `f:standard`
+
+- **Banned**: `banned:` - Find cards banned in a format
+
+  - Example: `banned:legacy`, `banned:modern`
+
+- **Restricted**: `restricted:` - Find cards restricted in a format
+  - Example: `restricted:vintage`
+
+#### Logical Operators
+
+- **AND** (implicit): Space-separated terms are ANDed together
+
+  - Example: `t:creature c:red k:haste`
+
+- **OR** (explicit): Use `OR` keyword
+
+  - Example: `t:creature OR t:enchantment`
+
+- **NOT** (prefix): Use `-` prefix
+
+  - Example: `-t:land`, `t:creature -c:blue`
+
+- **Parentheses**: Group conditions
+
+  - Example: `(t:creature OR t:enchantment) c:red`
+
+- **Plain Text**: If no field is specified, searches both name and oracle text
+  - Example: `Lightning` matches cards with "Lightning" in name or text
+
+**Complex Query Examples:**
 
 ```json
 {
@@ -229,14 +303,35 @@ You can combine multiple filters: `t:creature ci:red k:haste` finds red creature
 
 ```json
 {
-  "query": "t:creature c:red k:haste",
+  "query": "t:creature c:red k:haste cmc<=3",
   "limit": 20
 }
 ```
 
 ```json
 {
-  "query": "t:creature o:haste cmc<=3",
+  "query": "(t:instant OR t:sorcery) c:blue o:counter",
+  "limit": 15
+}
+```
+
+```json
+{
+  "query": "f:modern -banned:modern cmc>=4",
+  "limit": 10
+}
+```
+
+```json
+{
+  "query": "id:esper t:instant cmc:even",
+  "limit": 20
+}
+```
+
+```json
+{
+  "query": "m:{R}{R} cmc<=4 t:creature",
   "limit": 15
 }
 ```
@@ -364,11 +459,17 @@ MCP_PORT=3000 npm start
 - [x] Basic search with Scryfall-like syntax
 - [x] Support for type, color, color identity, CMC, keyword, and oracle text filters
 - [x] Color name mapping (red→R, blue→U, etc.)
+- [x] Support for mana cost queries (`m:`, `mana:`)
+- [x] Support for format legality queries (`f:`, `format:`, `banned:`, `restricted:`)
+- [x] Support for guild/shard/wedge color names (azorius, esper, etc.)
+- [x] Support for complex query logic (AND, OR, NOT, parentheses)
+- [x] Support for CMC even/odd and additional operators (`!=`)
 - [ ] Implement MTGGoldfish collection importer
 - [ ] Add `suggest_additions` tool
-- [ ] Enhance query parser with more Scryfall syntax (mana cost, power/toughness, etc.)
 - [ ] Add collection summary resource implementation
 - [ ] Add tools to search Default Cards (printings) by set, collector number, etc.
+- [ ] Add support for power/toughness queries (requires Default Cards data)
+- [ ] Add support for rarity queries (requires Default Cards data)
 
 ## Troubleshooting
 

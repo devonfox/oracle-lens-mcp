@@ -16,8 +16,10 @@ import {
 
 /**
  * Map color names to their single-letter codes
+ * Supports full names, abbreviations, and special values
  */
 const COLOR_MAP: Record<string, string> = {
+  // Basic colors
   white: "W",
   blue: "U",
   black: "B",
@@ -28,6 +30,52 @@ const COLOR_MAP: Record<string, string> = {
   b: "B",
   r: "R",
   g: "G",
+  // Special values
+  colorless: "C",
+  c: "C",
+  multicolor: "M",
+  m: "M",
+};
+
+/**
+ * Map guild/shard/wedge names to color combinations
+ */
+const COLOR_COMBINATION_MAP: Record<string, string[]> = {
+  // Guilds (two-color)
+  azorius: ["W", "U"],
+  dimir: ["U", "B"],
+  rakdos: ["B", "R"],
+  gruul: ["R", "G"],
+  selesnya: ["G", "W"],
+  orzhov: ["W", "B"],
+  izzet: ["U", "R"],
+  golgari: ["B", "G"],
+  boros: ["R", "W"],
+  simic: ["G", "U"],
+  // Shards (three-color, centered)
+  bant: ["G", "W", "U"],
+  esper: ["W", "U", "B"],
+  grixis: ["U", "B", "R"],
+  jund: ["B", "R", "G"],
+  naya: ["R", "G", "W"],
+  // Wedges (three-color, enemy pair + ally)
+  abzan: ["W", "B", "G"],
+  jeskai: ["U", "R", "W"],
+  sultai: ["B", "G", "U"],
+  mardu: ["R", "W", "B"],
+  temur: ["G", "U", "R"],
+  // Four-color
+  chaos: ["R", "G", "W", "U"], // Not black
+  aggression: ["R", "G", "W", "B"], // Not blue
+  altruism: ["G", "W", "U", "B"], // Not red
+  growth: ["R", "W", "U", "B"], // Not green
+  artifice: ["R", "G", "U", "B"], // Not white
+  // Colleges (Strixhaven)
+  quandrix: ["G", "U"],
+  silverquill: ["W", "B"],
+  witherbloom: ["B", "G"],
+  prismari: ["U", "R"],
+  lorehold: ["R", "W"],
 };
 
 /**
@@ -39,12 +87,26 @@ function normalizeColor(color: string): string {
 }
 
 /**
- * Parse a color set string (e.g., "wbg", "WUBRG") into an array of normalized colors
+ * Parse a color set string (e.g., "wbg", "WUBRG", "azorius", "esper") into an array of normalized colors
  */
 function parseColorSet(colorStr: string): string[] {
-  const colors: string[] = [];
   const normalized = colorStr.toLowerCase();
 
+  // Check if it's a named combination (guild, shard, wedge, etc.)
+  if (COLOR_COMBINATION_MAP[normalized]) {
+    return [...COLOR_COMBINATION_MAP[normalized]].sort();
+  }
+
+  // Check if it's a special value
+  if (normalized === "colorless" || normalized === "c") {
+    return ["C"];
+  }
+  if (normalized === "multicolor" || normalized === "m") {
+    return ["M"];
+  }
+
+  // Parse individual color letters
+  const colors: string[] = [];
   for (const char of normalized) {
     const normalizedColor = normalizeColor(char);
     if (normalizedColor && !colors.includes(normalizedColor)) {
@@ -326,23 +388,42 @@ function fieldToCondition(
 ): SQL | null {
   const { field, operator, value } = node;
 
-  // Field aliases
+  // Field aliases - supports Scryfall syntax
   const fieldMap: Record<string, string> = {
+    // Name
     n: "name",
     name: "name",
+    // Type
     t: "type",
     type: "type",
+    // Oracle text
     o: "oracle",
     oracle: "oracle",
+    // Colors
     c: "colors",
+    color: "colors",
     colors: "colors",
+    // Color identity
     ci: "color_identity",
+    id: "color_identity",
+    identity: "color_identity",
     color_identity: "color_identity",
+    // Converted mana cost / mana value
     cmc: "cmc",
     mv: "cmc",
-    mana: "cmc",
+    manavalue: "cmc",
+    // Mana cost (actual cost string)
+    m: "mana_cost",
+    mana: "mana_cost",
+    // Keywords
     k: "keyword",
+    kw: "keyword",
     keyword: "keyword",
+    // Format legality
+    f: "format",
+    format: "format",
+    banned: "banned",
+    restricted: "restricted",
   };
 
   const normalizedField = fieldMap[field];
@@ -370,6 +451,14 @@ function fieldToCondition(
 
   // Handle CMC field
   if (normalizedField === "cmc") {
+    // Support special values like "even" and "odd"
+    if (value.toLowerCase() === "even") {
+      return sql`${table.cmc} % 2 = 0`;
+    }
+    if (value.toLowerCase() === "odd") {
+      return sql`${table.cmc} % 2 = 1`;
+    }
+
     const numValue = parseInt(value, 10);
     if (isNaN(numValue)) {
       return null;
@@ -386,10 +475,20 @@ function fieldToCondition(
         return lt(table.cmc, numValue);
       case ">":
         return gt(table.cmc, numValue);
+      case "!=":
+        return sql`${table.cmc} != ${numValue}`;
       default:
         // Default to = if no operator
         return eq(table.cmc, numValue);
     }
+  }
+
+  // Handle mana cost field (actual cost string like "{1}{R}{R}")
+  if (normalizedField === "mana_cost") {
+    const searchValue = value.toLowerCase();
+    // Mana cost is stored as string like "{1}{R}{R}" or "{G}{U}"
+    // Support partial matching for mana symbols
+    return like(sql`lower(${table.manaCost})`, `%${searchValue}%`);
   }
 
   // Handle colors field
@@ -431,6 +530,7 @@ function fieldToCondition(
           )
         ) = 0`;
       case "!":
+      case "!=":
         // Not equal: card colors must not equal the set
         return sql`lower(${table.colors}) != lower(${colorSetStr})`;
       default:
@@ -477,6 +577,7 @@ function fieldToCondition(
           )
         ) = 0`;
       case "!":
+      case "!=":
         return sql`lower(${table.colorIdentity}) != lower(${colorSetStr})`;
       default:
         return sql`(
@@ -496,6 +597,67 @@ function fieldToCondition(
     const keywordLower = value.toLowerCase();
     // Keywords are stored as JSON array string like ["Haste","First strike"]
     return like(sql`lower(${table.keywords})`, `%"${keywordLower}"%`);
+  }
+
+  // Handle format legality fields
+  // Common format names (whitelist to prevent SQL injection)
+  const validFormats = [
+    "standard",
+    "future",
+    "historic",
+    "gladiator",
+    "pioneer",
+    "explorer",
+    "modern",
+    "legacy",
+    "pauper",
+    "vintage",
+    "penny",
+    "commander",
+    "oathbreaker",
+    "brawl",
+    "historicbrawl",
+    "alchemy",
+    "paupercommander",
+    "duel",
+    "oldschool",
+    "premodern",
+    "predh",
+  ];
+
+  if (normalizedField === "format") {
+    const formatLower = value.toLowerCase();
+    // Validate format name to prevent SQL injection
+    if (!validFormats.includes(formatLower)) {
+      return null; // Unknown format, skip
+    }
+    // Legalities are stored as JSON object like {"standard":"legal","modern":"legal","legacy":"banned"}
+    // Check if the format exists and is "legal"
+    return sql`json_extract(${table.legalities}, ${sql.raw(
+      `'$.${formatLower}'`
+    )}) = 'legal'`;
+  }
+
+  if (normalizedField === "banned") {
+    const formatLower = value.toLowerCase();
+    if (!validFormats.includes(formatLower)) {
+      return null;
+    }
+    // Check if the format exists and is "banned"
+    return sql`json_extract(${table.legalities}, ${sql.raw(
+      `'$.${formatLower}'`
+    )}) = 'banned'`;
+  }
+
+  if (normalizedField === "restricted") {
+    const formatLower = value.toLowerCase();
+    if (!validFormats.includes(formatLower)) {
+      return null;
+    }
+    // Check if the format exists and is "restricted"
+    return sql`json_extract(${table.legalities}, ${sql.raw(
+      `'$.${formatLower}'`
+    )}) = 'restricted'`;
   }
 
   return null;

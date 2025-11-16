@@ -6,3 +6,4 @@ db/*.db-journal
 .env
 .cursor
 temp-oracle-cards.json*
+.DS_Store
