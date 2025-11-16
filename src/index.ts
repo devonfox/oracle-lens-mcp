@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -30,7 +31,15 @@ function createServer() {
 }
 
 // Initialize database on startup
-await initializeDatabase();
+try {
+  await initializeDatabase();
+} catch (error) {
+  console.error("FATAL: Failed to initialize database:", error);
+  console.error(
+    "Please check your DATABASE_URL and ensure PostgreSQL is running."
+  );
+  process.exit(1);
+}
 
 // Setup server handlers
 function setupServerHandlers(server: McpServer) {
@@ -41,13 +50,61 @@ function setupServerHandlers(server: McpServer) {
         {
           name: "oracle_search",
           description:
-            "Search all Oracle cards using Scryfall-like syntax (t:type, o:text, ci:colors, cmc<=X, cmc>=X, k:keyword)",
+            "Search all Oracle cards using Scryfall-like syntax. Supports field queries, operators, logical operators, and named color combinations.",
           inputSchema: {
             type: "object",
             properties: {
               query: {
                 type: "string",
-                description: "Search query using Scryfall syntax or plain text",
+                description: `Search query using Scryfall syntax. 
+
+BASIC FIELDS:
+- Name: n: or name: (e.g., n:Lightning, name:Bolt)
+- Type: t: or type: (e.g., t:creature, t:enchantment, t:legendary)
+- Oracle Text: o: or oracle: (e.g., o:"draw a card", o:destroy) - use quotes for phrases
+- Keywords: k:, kw:, or keyword: (e.g., k:haste, kw:flying, keyword:lifelink)
+
+COLORS AND COLOR IDENTITY:
+- Colors: c:, color:, or colors: (e.g., c:red, c:R, c:WUBRG)
+  Operators: =, <= (subset), >= (superset), != (not equal)
+  Examples: c:red, c>=W, c<=WUG, c!=blue
+- Color Identity: ci:, id:, identity:, or color_identity: (same syntax as colors)
+  Examples: ci:WUG, id:esper, identity<=azorius
+- Named Combinations: Use guild/shard/wedge names directly
+  Guilds: azorius, dimir, rakdos, gruul, selesnya, orzhov, izzet, golgari, boros, simic
+  Shards: bant, esper, grixis, jund, naya
+  Wedges: abzan, jeskai, sultai, mardu, temur
+  Four-color: chaos, aggression, altruism, growth, artifice
+  Colleges: quandrix, silverquill, witherbloom, prismari, lorehold
+  Examples: c:esper, ci<=azorius, id:bant
+- Special Values: c:colorless or c:c, c:multicolor or c:m
+
+MANA COSTS:
+- Converted Mana Cost: cmc:, mv:, or manavalue:
+  Operators: =, <=, >=, <, >, !=
+  Special values: cmc:even, cmc:odd
+  Examples: cmc:3, cmc<=2, mv>=5, cmc:even
+- Mana Cost: m: or mana: (actual cost string)
+  Examples: m:{R}{R}, mana:2WW, m:{G}{U}
+
+FORMAT LEGALITY:
+- Format: f: or format: (e.g., f:modern, f:commander, f:standard)
+- Banned: banned: (e.g., banned:legacy, banned:modern)
+- Restricted: restricted: (e.g., restricted:vintage)
+
+LOGICAL OPERATORS:
+- AND: Implicit (space-separated terms) - e.g., t:creature c:red k:haste
+- OR: Explicit OR keyword - e.g., t:creature OR t:enchantment
+- NOT: Prefix with - - e.g., -t:land, t:creature -c:blue
+- Parentheses: Group conditions - e.g., (t:creature OR t:enchantment) c:red
+- Plain Text: If no field specified, searches name and oracle text - e.g., Lightning
+
+EXAMPLES:
+- "t:creature c:red k:haste cmc<=3"
+- "f:modern -banned:modern cmc>=4"
+- "(t:instant OR t:sorcery) c:blue o:counter"
+- "id:esper t:instant cmc:even"
+- "m:{R}{R} cmc<=4 t:creature"`,
               },
               limit: {
                 type: "number",
@@ -61,13 +118,61 @@ function setupServerHandlers(server: McpServer) {
         {
           name: "collection_search",
           description:
-            "Search cards in your collection using the same syntax as oracle_search",
+            "Search cards in your collection using the same Scryfall-like syntax as oracle_search. Only returns cards that are in the user's collection inventory.",
           inputSchema: {
             type: "object",
             properties: {
               query: {
                 type: "string",
-                description: "Search query using Scryfall syntax or plain text",
+                description: `Search query using Scryfall syntax (same as oracle_search). 
+
+BASIC FIELDS:
+- Name: n: or name: (e.g., n:Lightning, name:Bolt)
+- Type: t: or type: (e.g., t:creature, t:enchantment, t:legendary)
+- Oracle Text: o: or oracle: (e.g., o:"draw a card", o:destroy) - use quotes for phrases
+- Keywords: k:, kw:, or keyword: (e.g., k:haste, kw:flying, keyword:lifelink)
+
+COLORS AND COLOR IDENTITY:
+- Colors: c:, color:, or colors: (e.g., c:red, c:R, c:WUBRG)
+  Operators: =, <= (subset), >= (superset), != (not equal)
+  Examples: c:red, c>=W, c<=WUG, c!=blue
+- Color Identity: ci:, id:, identity:, or color_identity: (same syntax as colors)
+  Examples: ci:WUG, id:esper, identity<=azorius
+- Named Combinations: Use guild/shard/wedge names directly
+  Guilds: azorius, dimir, rakdos, gruul, selesnya, orzhov, izzet, golgari, boros, simic
+  Shards: bant, esper, grixis, jund, naya
+  Wedges: abzan, jeskai, sultai, mardu, temur
+  Four-color: chaos, aggression, altruism, growth, artifice
+  Colleges: quandrix, silverquill, witherbloom, prismari, lorehold
+  Examples: c:esper, ci<=azorius, id:bant
+- Special Values: c:colorless or c:c, c:multicolor or c:m
+
+MANA COSTS:
+- Converted Mana Cost: cmc:, mv:, or manavalue:
+  Operators: =, <=, >=, <, >, !=
+  Special values: cmc:even, cmc:odd
+  Examples: cmc:3, cmc<=2, mv>=5, cmc:even
+- Mana Cost: m: or mana: (actual cost string)
+  Examples: m:{R}{R}, mana:2WW, m:{G}{U}
+
+FORMAT LEGALITY:
+- Format: f: or format: (e.g., f:modern, f:commander, f:standard)
+- Banned: banned: (e.g., banned:legacy, banned:modern)
+- Restricted: restricted: (e.g., restricted:vintage)
+
+LOGICAL OPERATORS:
+- AND: Implicit (space-separated terms) - e.g., t:creature c:red k:haste
+- OR: Explicit OR keyword - e.g., t:creature OR t:enchantment
+- NOT: Prefix with - - e.g., -t:land, t:creature -c:blue
+- Parentheses: Group conditions - e.g., (t:creature OR t:enchantment) c:red
+- Plain Text: If no field specified, searches name and oracle text - e.g., Lightning
+
+EXAMPLES:
+- "t:creature c:red k:haste cmc<=3"
+- "f:modern -banned:modern cmc>=4"
+- "(t:instant OR t:sorcery) c:blue o:counter"
+- "id:esper t:instant cmc:even"
+- "m:{R}{R} cmc<=4 t:creature"`,
               },
               limit: {
                 type: "number",
@@ -352,7 +457,43 @@ async function runStdioServer() {
 async function runHttpServer() {
   const port = process.env.MCP_PORT ? parseInt(process.env.MCP_PORT, 10) : 3000;
   const app = express();
-  app.use(express.json());
+
+  // Add error handler for JSON parsing errors
+  app.use(
+    express.json({
+      strict: false, // Allow non-objects
+    })
+  );
+
+  // Handle JSON parsing errors
+  app.use(
+    (
+      err: any,
+      req: express.Request,
+      res: express.Response,
+      next: express.NextFunction
+    ) => {
+      if (err instanceof SyntaxError && "body" in err) {
+        console.error(`[HTTP] JSON parsing error:`, err.message);
+        return res.status(400).json({
+          jsonrpc: "2.0",
+          error: {
+            code: -32700,
+            message: "Parse error: Invalid JSON",
+          },
+          id: null,
+        });
+      }
+      next(err);
+    }
+  );
+
+  console.error(`[HTTP] Starting HTTP server on port ${port}...`);
+  console.error(
+    `[HTTP] Database URL: ${
+      process.env.DATABASE_URL ? "set" : "not set (using default)"
+    }`
+  );
 
   // Map to store transports by session ID
   const transports: Map<string, StreamableHTTPServerTransport> = new Map();
@@ -384,35 +525,50 @@ async function runHttpServer() {
             sessionId ? ` (replacing unknown session ${sessionId})` : ""
           }`
         );
-        const server = createServer();
-        setupServerHandlers(server);
+        try {
+          const server = createServer();
+          console.error(
+            `[HTTP] Server instance created, setting up handlers...`
+          );
+          setupServerHandlers(server);
+          console.error(`[HTTP] Handlers set up, creating transport...`);
 
-        const newTransport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: () => randomUUID(),
-          onsessioninitialized: (sid) => {
-            console.error(`[HTTP] Session initialized with ID: ${sid}`);
-            transports.set(sid, newTransport);
-          },
-          onsessionclosed: (sid) => {
-            console.error(`[HTTP] Session closed: ${sid}`);
-            transports.delete(sid);
-          },
-        });
+          const newTransport = new StreamableHTTPServerTransport({
+            sessionIdGenerator: () => randomUUID(),
+            onsessioninitialized: (sid) => {
+              console.error(`[HTTP] Session initialized with ID: ${sid}`);
+              transports.set(sid, newTransport);
+            },
+            onsessionclosed: (sid) => {
+              console.error(`[HTTP] Session closed: ${sid}`);
+              transports.delete(sid);
+            },
+          });
 
-        // Set up onclose handler to clean up transport when closed
-        newTransport.onclose = () => {
-          const sid = newTransport.sessionId;
-          if (sid && transports.has(sid)) {
-            console.error(
-              `[HTTP] Transport closed for session ${sid}, removing from transports map`
-            );
-            transports.delete(sid);
-          }
-        };
+          // Set up onclose handler to clean up transport when closed
+          newTransport.onclose = () => {
+            const sid = newTransport.sessionId;
+            if (sid && transports.has(sid)) {
+              console.error(
+                `[HTTP] Transport closed for session ${sid}, removing from transports map`
+              );
+              transports.delete(sid);
+            }
+          };
 
-        // Connect the transport to the MCP server
-        await server.connect(newTransport);
-        return newTransport;
+          // Connect the transport to the MCP server
+          console.error(`[HTTP] Connecting transport to server...`);
+          await server.connect(newTransport);
+          console.error(`[HTTP] Transport connected successfully`);
+          return newTransport;
+        } catch (sessionError: any) {
+          console.error(`[HTTP] Error creating new session:`, {
+            error: sessionError?.message,
+            code: sessionError?.code,
+            stack: sessionError?.stack,
+          });
+          throw sessionError;
+        }
       };
 
       // Check if this is an initialize request - always create new session for initialize
@@ -443,27 +599,53 @@ async function runHttpServer() {
           "No session ID provided. Please send an initialize request first or include a session ID header.";
 
         console.error(`[HTTP] Bad Request: ${errorMsg}`);
-        res.status(400).json({
-          jsonrpc: "2.0",
-          error: {
-            code: -32000,
-            message: `Bad Request: ${errorMsg}`,
-          },
-          id: requestId || null,
-        });
+        if (!res.headersSent) {
+          res.status(400).json({
+            jsonrpc: "2.0",
+            error: {
+              code: -32000,
+              message: `Bad Request: ${errorMsg}`,
+            },
+            id: requestId || null,
+          });
+        }
         return;
       }
     } catch (error) {
-      console.error("Error handling MCP request:", error);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      const errorStack = error instanceof Error ? error.stack : undefined;
+      console.error("Error handling MCP request:", {
+        error: errorMessage,
+        stack: errorStack,
+        body: req.body,
+        headers: Object.keys(req.headers),
+      });
       if (!res.headersSent) {
-        res.status(500).json({
-          jsonrpc: "2.0",
-          error: {
-            code: -32603,
-            message: "Internal server error",
-          },
-          id: null,
-        });
+        // If it's a validation error, return 400 instead of 500
+        if (
+          errorMessage.includes("Bad Request") ||
+          errorMessage.includes("validation")
+        ) {
+          res.status(400).json({
+            jsonrpc: "2.0",
+            error: {
+              code: -32600,
+              message: `Bad Request: ${errorMessage}`,
+            },
+            id: requestId || null,
+          });
+        } else {
+          res.status(500).json({
+            jsonrpc: "2.0",
+            error: {
+              code: -32603,
+              message: "Internal server error",
+              data: errorMessage,
+            },
+            id: requestId || null,
+          });
+        }
       }
     }
   };

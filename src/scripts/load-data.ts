@@ -1,4 +1,5 @@
-import { db, sqlite, initializeDatabase } from "../db/index.js";
+import "dotenv/config";
+import { db, pool, initializeDatabase } from "../db/index.js";
 import { oracleCards, defaultCards } from "../db/schema.js";
 import { createWriteStream, createReadStream } from "fs";
 import { pipeline } from "stream/promises";
@@ -143,7 +144,7 @@ async function loadOracleCardsIntoDatabase(filePath: string): Promise<void> {
 
   // Drop existing data
   console.error("Dropping existing oracle_cards data...");
-  sqlite.exec("DELETE FROM oracle_cards");
+  await db.delete(oracleCards);
 
   // Read and parse JSON file
   console.error("Reading JSON file...");
@@ -166,12 +167,10 @@ async function loadOracleCardsIntoDatabase(filePath: string): Promise<void> {
       cmc: card.cmc != null ? Math.round(card.cmc) : null,
       typeLine: card.type_line,
       oracleText: card.oracle_text || null,
-      colors: card.colors ? JSON.stringify(card.colors) : null,
-      colorIdentity: card.color_identity
-        ? JSON.stringify(card.color_identity)
-        : null,
-      keywords: card.keywords ? JSON.stringify(card.keywords) : null,
-      legalities: card.legalities ? JSON.stringify(card.legalities) : null,
+      colors: card.colors || null, // PostgreSQL JSONB stores JSON directly
+      colorIdentity: card.color_identity || null,
+      keywords: card.keywords || null,
+      legalities: card.legalities || null,
     }));
 
     await db.insert(oracleCards).values(insertData);
@@ -189,41 +188,9 @@ async function loadOracleCardsIntoDatabase(filePath: string): Promise<void> {
 async function loadDefaultCardsIntoDatabase(filePath: string): Promise<void> {
   console.error("Loading Default cards into database...");
 
-  // Check if table exists, if not create it
-  const tableExists = sqlite
-    .prepare(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='default_cards'"
-    )
-    .get();
-
-  if (!tableExists) {
-    console.error("default_cards table does not exist. Creating it...");
-    sqlite.exec(`
-      CREATE TABLE IF NOT EXISTS default_cards (
-        id TEXT PRIMARY KEY,
-        oracle_id TEXT,
-        name TEXT NOT NULL,
-        \`set\` TEXT,
-        set_name TEXT,
-        collector_number TEXT,
-        rarity TEXT,
-        lang TEXT,
-        released_at TEXT,
-        frame TEXT,
-        border_color TEXT,
-        security_stamp TEXT,
-        data TEXT,
-        FOREIGN KEY (oracle_id) REFERENCES oracle_cards(oracle_id)
-      );
-      CREATE INDEX IF NOT EXISTS idx_default_cards_oracle_id ON default_cards(oracle_id);
-      CREATE INDEX IF NOT EXISTS idx_default_cards_set ON default_cards(\`set\`);
-      CREATE INDEX IF NOT EXISTS idx_default_cards_name ON default_cards(name);
-    `);
-  }
-
   // Drop existing data
   console.error("Dropping existing default_cards data...");
-  sqlite.exec("DELETE FROM default_cards");
+  await db.delete(defaultCards);
 
   // Read and parse JSON file
   console.error("Reading JSON file...");
@@ -271,7 +238,7 @@ async function loadDefaultCardsIntoDatabase(filePath: string): Promise<void> {
         frame: card.frame || null,
         borderColor: card.border_color || null,
         securityStamp: card.security_stamp || null,
-        data: additionalData ? JSON.stringify(additionalData) : null,
+        data: additionalData || null, // PostgreSQL JSONB stores JSON directly
       };
     });
 

@@ -1,5 +1,5 @@
 import { db } from "../db/index.js";
-import { oracleCards, inventory } from "../db/schema.js";
+import { oracleCards, defaultCards, inventory } from "../db/schema.js";
 import {
   eq,
   and,
@@ -12,6 +12,7 @@ import {
   gt,
   sql,
   SQL,
+  desc,
 } from "drizzle-orm";
 
 /**
@@ -206,12 +207,13 @@ function tokenize(query: string): Token[] {
       continue;
     }
 
-    // Handle fielded terms (e.g., t:creature, ci<=wbg, cmc>=3, o:"draw a card")
-    const fieldMatch = query.slice(i).match(/^([a-z]+)([<>=!]+)?:/i);
-    if (fieldMatch) {
-      const fieldName = fieldMatch[1].toLowerCase();
-      const operator = fieldMatch[2] || "";
-      i += fieldMatch[0].length;
+    // Handle fielded terms (e.g., t:creature, ci<=wbg, cmc>=3, o:"draw a card", pow>tou)
+    // First try with colon: field:value or field:operator:value
+    const fieldMatchWithColon = query.slice(i).match(/^([a-z]+)([<>=!]+)?:/i);
+    if (fieldMatchWithColon) {
+      const fieldName = fieldMatchWithColon[1].toLowerCase();
+      const operator = fieldMatchWithColon[2] || "";
+      i += fieldMatchWithColon[0].length;
 
       // Extract value - handle quoted strings or unquoted values
       let value = "";
@@ -245,6 +247,26 @@ function tokenize(query: string): Token[] {
       tokens.push({
         type: "FIELD",
         value: fieldName + (operator ? operator : "") + ":" + value,
+        start,
+        end: i,
+      });
+      continue;
+    }
+
+    // Handle fielded terms without colon (e.g., pow>tou, pow>=3)
+    // Pattern: field operator value (where operator is >, <, >=, <=, =, !=)
+    const fieldMatchNoColon = query
+      .slice(i)
+      .match(/^([a-z]+)([<>=!]+)([a-z0-9*]+)/i);
+    if (fieldMatchNoColon) {
+      const fieldName = fieldMatchNoColon[1].toLowerCase();
+      const operator = fieldMatchNoColon[2];
+      const value = fieldMatchNoColon[3];
+      i += fieldMatchNoColon[0].length;
+
+      tokens.push({
+        type: "FIELD",
+        value: fieldName + operator + ":" + value,
         start,
         end: i,
       });
@@ -381,10 +403,12 @@ function parse(tokens: Token[]): ASTNode {
 
 /**
  * Convert a field AST node to a SQL condition
+ * Works with either oracle_cards or default_cards (joined with oracle_cards)
  */
 function fieldToCondition(
   node: Extract<ASTNode, { type: "FIELD" }>,
-  table: typeof oracleCards
+  oracleTable: typeof oracleCards,
+  defaultTable?: typeof defaultCards
 ): SQL | null {
   const { field, operator, value } = node;
 
@@ -424,6 +448,13 @@ function fieldToCondition(
     format: "format",
     banned: "banned",
     restricted: "restricted",
+    // Power/Toughness (only in default_cards)
+    pow: "power",
+    power: "power",
+    tou: "toughness",
+    toughness: "toughness",
+    pt: "power_toughness", // Combined power/toughness
+    powtou: "power_toughness",
   };
 
   const normalizedField = fieldMap[field];
@@ -434,29 +465,46 @@ function fieldToCondition(
   // Handle name field
   if (normalizedField === "name") {
     const searchValue = value.toLowerCase();
-    return like(sql`lower(${table.name})`, `%${searchValue}%`);
+    if (defaultTable) {
+      // Use alias when joined
+      return like(sql`lower(oc.name)`, `%${searchValue}%`);
+    }
+    return like(sql`lower(${oracleTable.name})`, `%${searchValue}%`);
   }
 
   // Handle type field
   if (normalizedField === "type") {
     const searchValue = value.toLowerCase();
-    return like(sql`lower(${table.typeLine})`, `%${searchValue}%`);
+    if (defaultTable) {
+      return like(sql`lower(oc.type_line)`, `%${searchValue}%`);
+    }
+    return like(sql`lower(${oracleTable.typeLine})`, `%${searchValue}%`);
   }
 
   // Handle oracle text field
   if (normalizedField === "oracle") {
     const searchValue = value.toLowerCase();
-    return like(sql`lower(${table.oracleText})`, `%${searchValue}%`);
+    if (defaultTable) {
+      return like(sql`lower(oc.oracle_text)`, `%${searchValue}%`);
+    }
+    return like(sql`lower(${oracleTable.oracleText})`, `%${searchValue}%`);
   }
 
   // Handle CMC field
   if (normalizedField === "cmc") {
     // Support special values like "even" and "odd"
     if (value.toLowerCase() === "even") {
-      return sql`${table.cmc} % 2 = 0`;
+      // Use oc.cmc from oracle_cards
+      if (defaultTable) {
+        return sql`(oc.cmc % 2) = 0`;
+      }
+      return sql`${oracleTable.cmc} % 2 = 0`;
     }
     if (value.toLowerCase() === "odd") {
-      return sql`${table.cmc} % 2 = 1`;
+      if (defaultTable) {
+        return sql`(oc.cmc % 2) = 1`;
+      }
+      return sql`${oracleTable.cmc} % 2 = 1`;
     }
 
     const numValue = parseInt(value, 10);
@@ -464,22 +512,41 @@ function fieldToCondition(
       return null;
     }
 
+    if (defaultTable) {
+      // Use oc.cmc from oracle_cards (consistent across printings)
+      switch (operator) {
+        case "=":
+          return sql`oc.cmc = ${numValue}`;
+        case "<=":
+          return sql`oc.cmc <= ${numValue}`;
+        case ">=":
+          return sql`oc.cmc >= ${numValue}`;
+        case "<":
+          return sql`oc.cmc < ${numValue}`;
+        case ">":
+          return sql`oc.cmc > ${numValue}`;
+        case "!=":
+          return sql`oc.cmc != ${numValue}`;
+        default:
+          return sql`oc.cmc = ${numValue}`;
+      }
+    }
+
     switch (operator) {
       case "=":
-        return eq(table.cmc, numValue);
+        return eq(oracleTable.cmc, numValue);
       case "<=":
-        return lte(table.cmc, numValue);
+        return lte(oracleTable.cmc, numValue);
       case ">=":
-        return gte(table.cmc, numValue);
+        return gte(oracleTable.cmc, numValue);
       case "<":
-        return lt(table.cmc, numValue);
+        return lt(oracleTable.cmc, numValue);
       case ">":
-        return gt(table.cmc, numValue);
+        return gt(oracleTable.cmc, numValue);
       case "!=":
-        return sql`${table.cmc} != ${numValue}`;
+        return sql`${oracleTable.cmc} != ${numValue}`;
       default:
-        // Default to = if no operator
-        return eq(table.cmc, numValue);
+        return eq(oracleTable.cmc, numValue);
     }
   }
 
@@ -488,7 +555,80 @@ function fieldToCondition(
     const searchValue = value.toLowerCase();
     // Mana cost is stored as string like "{1}{R}{R}" or "{G}{U}"
     // Support partial matching for mana symbols
-    return like(sql`lower(${table.manaCost})`, `%${searchValue}%`);
+    if (defaultTable) {
+      return like(sql`lower(oc.mana_cost)`, `%${searchValue}%`);
+    }
+    return like(sql`lower(${oracleTable.manaCost})`, `%${searchValue}%`);
+  }
+
+  // Handle power field
+  if (normalizedField === "power" || normalizedField === "pow") {
+    if (!defaultTable) {
+      return null; // Power only available in default_cards
+    }
+    // Power can be numeric or special values like "*", "1+*", "?"
+    // For comparisons, we'll handle numeric values only
+    // Use a safe cast that filters out non-numeric values
+    if (value.toLowerCase() === "tou" || value.toLowerCase() === "toughness") {
+      // Special case: pow>tou means power > toughness
+      // Only compare when both are numeric
+      return sql`(
+        (dc.data->>'power') ~ '^[0-9]+(\.[0-9]+)?$' AND
+        (dc.data->>'toughness') ~ '^[0-9]+(\.[0-9]+)?$' AND
+        (dc.data->>'power')::numeric > (dc.data->>'toughness')::numeric
+      )`;
+    }
+    const numValue = parseFloat(value);
+    if (isNaN(numValue)) {
+      return null;
+    }
+    // Only compare numeric power values (filter out "*", "1+*", "?", etc.)
+    const numericCheck = sql`(dc.data->>'power') ~ '^[0-9]+(\.[0-9]+)?$'`;
+    switch (operator) {
+      case "=":
+        return sql`${numericCheck} AND (dc.data->>'power')::numeric = ${numValue}`;
+      case "<=":
+        return sql`${numericCheck} AND (dc.data->>'power')::numeric <= ${numValue}`;
+      case ">=":
+        return sql`${numericCheck} AND (dc.data->>'power')::numeric >= ${numValue}`;
+      case "<":
+        return sql`${numericCheck} AND (dc.data->>'power')::numeric < ${numValue}`;
+      case ">":
+        return sql`${numericCheck} AND (dc.data->>'power')::numeric > ${numValue}`;
+      case "!=":
+        return sql`${numericCheck} AND (dc.data->>'power')::numeric != ${numValue}`;
+      default:
+        return sql`${numericCheck} AND (dc.data->>'power')::numeric = ${numValue}`;
+    }
+  }
+
+  // Handle toughness field
+  if (normalizedField === "toughness" || normalizedField === "tou") {
+    if (!defaultTable) {
+      return null; // Toughness only available in default_cards
+    }
+    const numValue = parseFloat(value);
+    if (isNaN(numValue)) {
+      return null;
+    }
+    // Only compare numeric toughness values (filter out "*", "1+*", "?", etc.)
+    const numericCheck = sql`(dc.data->>'toughness') ~ '^[0-9]+(\.[0-9]+)?$'`;
+    switch (operator) {
+      case "=":
+        return sql`${numericCheck} AND (dc.data->>'toughness')::numeric = ${numValue}`;
+      case "<=":
+        return sql`${numericCheck} AND (dc.data->>'toughness')::numeric <= ${numValue}`;
+      case ">=":
+        return sql`${numericCheck} AND (dc.data->>'toughness')::numeric >= ${numValue}`;
+      case "<":
+        return sql`${numericCheck} AND (dc.data->>'toughness')::numeric < ${numValue}`;
+      case ">":
+        return sql`${numericCheck} AND (dc.data->>'toughness')::numeric > ${numValue}`;
+      case "!=":
+        return sql`${numericCheck} AND (dc.data->>'toughness')::numeric != ${numValue}`;
+      default:
+        return sql`${numericCheck} AND (dc.data->>'toughness')::numeric = ${numValue}`;
+    }
   }
 
   // Handle colors field
@@ -498,50 +638,81 @@ function fieldToCondition(
       return null;
     }
 
-    // Colors are stored as JSON array string like ["W","U","B"]
-    // We need to check if the card's colors match the operator
-    const colorSetStr = JSON.stringify(colorSet);
-    const colorSetLower = colorSet.map((c) => c.toLowerCase());
+    // Colors are stored as JSONB array like ["W","U","B"]
+    // Use PostgreSQL JSONB operators
+    const colorSetJson = JSON.stringify(colorSet);
 
+    // Use oracle_cards for colors (consistent across printings)
+    if (defaultTable) {
+      // Use alias when joined
+      switch (operator) {
+        case "=":
+          return sql`oc.colors = ${colorSetJson}::jsonb`;
+        case "<=":
+          return sql`(
+            oc.colors IS NULL OR
+            NOT EXISTS (
+              SELECT 1 FROM jsonb_array_elements_text(oc.colors) AS card_color
+              WHERE card_color NOT IN (${sql.raw(
+                colorSet.map((c) => `'${c}'`).join(",")
+              )})
+            )
+          )`;
+        case ">=":
+          return sql`(
+            NOT EXISTS (
+              SELECT 1 FROM jsonb_array_elements_text(${sql.raw(
+                `'${colorSetJson}'`
+              )}::jsonb) AS search_color
+              WHERE search_color NOT IN (
+                SELECT jsonb_array_elements_text(oc.colors)
+                WHERE oc.colors IS NOT NULL
+              )
+            )
+          )`;
+        case "!":
+        case "!=":
+          return sql`oc.colors != ${colorSetJson}::jsonb`;
+        default:
+          return sql`oc.colors ?| ${sql.raw(
+            `ARRAY[${colorSet.map((c) => `'${c}'`).join(",")}]`
+          )}`;
+      }
+    }
+
+    const colorsField = oracleTable.colors;
     switch (operator) {
       case "=":
-        // Exact match: card colors must exactly equal the set
-        // Compare normalized JSON arrays
-        return sql`lower(${table.colors}) = lower(${colorSetStr})`;
+        return sql`${colorsField} = ${colorSetJson}::jsonb`;
       case "<=":
-        // Subset: card colors must be a subset of the given set
-        // Check that all card colors are in the given set
-        // If card has no colors, it's a subset of any set
         return sql`(
-          ${table.colors} IS NULL OR
-          (SELECT COUNT(*) FROM json_each(${table.colors}) 
-           WHERE lower(trim(json_each.value, '"')) NOT IN (${sql.raw(
-             colorSetLower.map((c) => `'${c}'`).join(",")
-           )})) = 0
+          ${colorsField} IS NULL OR
+          NOT EXISTS (
+            SELECT 1 FROM jsonb_array_elements_text(${colorsField}) AS card_color
+            WHERE card_color NOT IN (${sql.raw(
+              colorSet.map((c) => `'${c}'`).join(",")
+            )})
+          )
         )`;
       case ">=":
-        // Superset: card colors must contain all colors in the set
-        // Check that all colors in the set are in the card's colors
         return sql`(
-          SELECT COUNT(*) FROM json_each(${sql.raw(`'${colorSetStr}'`)})
-          WHERE lower(trim(json_each.value, '"')) NOT IN (
-            SELECT lower(trim(value, '"')) FROM json_each(${table.colors})
-            WHERE ${table.colors} IS NOT NULL
+          NOT EXISTS (
+            SELECT 1 FROM jsonb_array_elements_text(${sql.raw(
+              `'${colorSetJson}'`
+            )}::jsonb) AS search_color
+            WHERE search_color NOT IN (
+              SELECT jsonb_array_elements_text(${colorsField})
+              WHERE ${colorsField} IS NOT NULL
+            )
           )
-        ) = 0`;
+        )`;
       case "!":
       case "!=":
-        // Not equal: card colors must not equal the set
-        return sql`lower(${table.colors}) != lower(${colorSetStr})`;
+        return sql`${colorsField} != ${colorSetJson}::jsonb`;
       default:
-        // Default: check if any color matches (contains)
-        return sql`(
-          SELECT COUNT(*) FROM json_each(${sql.raw(`'${colorSetStr}'`)})
-          WHERE lower(trim(json_each.value, '"')) IN (
-            SELECT lower(trim(value, '"')) FROM json_each(${table.colors})
-            WHERE ${table.colors} IS NOT NULL
-          )
-        ) > 0`;
+        return sql`${colorsField} ?| ${sql.raw(
+          `ARRAY[${colorSet.map((c) => `'${c}'`).join(",")}]`
+        )}`;
     }
   }
 
@@ -552,51 +723,96 @@ function fieldToCondition(
       return null;
     }
 
-    const colorSetStr = JSON.stringify(colorSet);
-    const colorSetLower = colorSet.map((c) => c.toLowerCase());
+    const colorSetJson = JSON.stringify(colorSet);
 
+    if (defaultTable) {
+      // Use alias when joined
+      switch (operator) {
+        case "=":
+          return sql`oc.color_identity = ${colorSetJson}::jsonb`;
+        case "<=":
+          return sql`(
+            oc.color_identity IS NULL OR
+            NOT EXISTS (
+              SELECT 1 FROM jsonb_array_elements_text(oc.color_identity) AS card_color
+              WHERE card_color NOT IN (${sql.raw(
+                colorSet.map((c) => `'${c}'`).join(",")
+              )})
+            )
+          )`;
+        case ">=":
+          return sql`(
+            NOT EXISTS (
+              SELECT 1 FROM jsonb_array_elements_text(${sql.raw(
+                `'${colorSetJson}'`
+              )}::jsonb) AS search_color
+              WHERE search_color NOT IN (
+                SELECT jsonb_array_elements_text(oc.color_identity)
+                WHERE oc.color_identity IS NOT NULL
+              )
+            )
+          )`;
+        case "!":
+        case "!=":
+          return sql`oc.color_identity != ${colorSetJson}::jsonb`;
+        default:
+          return sql`oc.color_identity ?| ${sql.raw(
+            `ARRAY[${colorSet.map((c) => `'${c}'`).join(",")}]`
+          )}`;
+      }
+    }
+
+    const colorIdentityField = oracleTable.colorIdentity;
     switch (operator) {
       case "=":
-        return sql`lower(${table.colorIdentity}) = lower(${colorSetStr})`;
+        return sql`${colorIdentityField} = ${colorSetJson}::jsonb`;
       case "<=":
         return sql`(
-          ${table.colorIdentity} IS NULL OR
-          (SELECT COUNT(*) FROM json_each(${table.colorIdentity}) 
-           WHERE lower(trim(json_each.value, '"')) NOT IN (${sql.raw(
-             colorSetLower.map((c) => `'${c}'`).join(",")
-           )})) = 0
+          ${colorIdentityField} IS NULL OR
+          NOT EXISTS (
+            SELECT 1 FROM jsonb_array_elements_text(${colorIdentityField}) AS card_color
+            WHERE card_color NOT IN (${sql.raw(
+              colorSet.map((c) => `'${c}'`).join(",")
+            )})
+          )
         )`;
       case ">=":
         return sql`(
-          SELECT COUNT(*) FROM json_each(${sql.raw(`'${colorSetStr}'`)})
-          WHERE lower(trim(json_each.value, '"')) NOT IN (
-            SELECT lower(trim(value, '"')) FROM json_each(${
-              table.colorIdentity
-            })
-            WHERE ${table.colorIdentity} IS NOT NULL
+          NOT EXISTS (
+            SELECT 1 FROM jsonb_array_elements_text(${sql.raw(
+              `'${colorSetJson}'`
+            )}::jsonb) AS search_color
+            WHERE search_color NOT IN (
+              SELECT jsonb_array_elements_text(${colorIdentityField})
+              WHERE ${colorIdentityField} IS NOT NULL
+            )
           )
-        ) = 0`;
+        )`;
       case "!":
       case "!=":
-        return sql`lower(${table.colorIdentity}) != lower(${colorSetStr})`;
+        return sql`${colorIdentityField} != ${colorSetJson}::jsonb`;
       default:
-        return sql`(
-          SELECT COUNT(*) FROM json_each(${sql.raw(`'${colorSetStr}'`)})
-          WHERE lower(trim(json_each.value, '"')) IN (
-            SELECT lower(trim(value, '"')) FROM json_each(${
-              table.colorIdentity
-            })
-            WHERE ${table.colorIdentity} IS NOT NULL
-          )
-        ) > 0`;
+        return sql`${colorIdentityField} ?| ${sql.raw(
+          `ARRAY[${colorSet.map((c) => `'${c}'`).join(",")}]`
+        )}`;
     }
   }
 
   // Handle keyword field
   if (normalizedField === "keyword") {
     const keywordLower = value.toLowerCase();
-    // Keywords are stored as JSON array string like ["Haste","First strike"]
-    return like(sql`lower(${table.keywords})`, `%"${keywordLower}"%`);
+    // Keywords are stored as JSONB array like ["Haste","First strike"]
+    // Use PostgreSQL JSONB contains operator
+    if (defaultTable) {
+      return sql`EXISTS (
+        SELECT 1 FROM jsonb_array_elements_text(oc.keywords) AS keyword
+        WHERE lower(keyword) = ${keywordLower}
+      )`;
+    }
+    return sql`EXISTS (
+      SELECT 1 FROM jsonb_array_elements_text(${oracleTable.keywords}) AS keyword
+      WHERE lower(keyword) = ${keywordLower}
+    )`;
   }
 
   // Handle format legality fields
@@ -627,15 +843,15 @@ function fieldToCondition(
 
   if (normalizedField === "format") {
     const formatLower = value.toLowerCase();
-    // Validate format name to prevent SQL injection
     if (!validFormats.includes(formatLower)) {
-      return null; // Unknown format, skip
+      return null;
     }
-    // Legalities are stored as JSON object like {"standard":"legal","modern":"legal","legacy":"banned"}
-    // Check if the format exists and is "legal"
-    return sql`json_extract(${table.legalities}, ${sql.raw(
-      `'$.${formatLower}'`
-    )}) = 'legal'`;
+    if (defaultTable) {
+      return sql`oc.legalities->>${sql.raw(`'${formatLower}'`)} = 'legal'`;
+    }
+    return sql`${oracleTable.legalities}->>${sql.raw(
+      `'${formatLower}'`
+    )} = 'legal'`;
   }
 
   if (normalizedField === "banned") {
@@ -643,10 +859,12 @@ function fieldToCondition(
     if (!validFormats.includes(formatLower)) {
       return null;
     }
-    // Check if the format exists and is "banned"
-    return sql`json_extract(${table.legalities}, ${sql.raw(
-      `'$.${formatLower}'`
-    )}) = 'banned'`;
+    if (defaultTable) {
+      return sql`oc.legalities->>${sql.raw(`'${formatLower}'`)} = 'banned'`;
+    }
+    return sql`${oracleTable.legalities}->>${sql.raw(
+      `'${formatLower}'`
+    )} = 'banned'`;
   }
 
   if (normalizedField === "restricted") {
@@ -654,10 +872,12 @@ function fieldToCondition(
     if (!validFormats.includes(formatLower)) {
       return null;
     }
-    // Check if the format exists and is "restricted"
-    return sql`json_extract(${table.legalities}, ${sql.raw(
-      `'$.${formatLower}'`
-    )}) = 'restricted'`;
+    if (defaultTable) {
+      return sql`oc.legalities->>${sql.raw(`'${formatLower}'`)} = 'restricted'`;
+    }
+    return sql`${oracleTable.legalities}->>${sql.raw(
+      `'${formatLower}'`
+    )} = 'restricted'`;
   }
 
   return null;
@@ -668,44 +888,55 @@ function fieldToCondition(
  */
 function plainTextToCondition(
   node: Extract<ASTNode, { type: "PLAIN_TEXT" }>,
-  table: typeof oracleCards
+  oracleTable: typeof oracleCards,
+  defaultTable?: typeof defaultCards
 ): SQL {
   const searchValue = node.value.toLowerCase();
+  if (defaultTable) {
+    return or(
+      like(sql`lower(oc.name)`, `%${searchValue}%`),
+      like(sql`lower(oc.oracle_text)`, `%${searchValue}%`)
+    )!;
+  }
   return or(
-    like(sql`lower(${table.name})`, `%${searchValue}%`),
-    like(sql`lower(${table.oracleText})`, `%${searchValue}%`)
+    like(sql`lower(${oracleTable.name})`, `%${searchValue}%`),
+    like(sql`lower(${oracleTable.oracleText})`, `%${searchValue}%`)
   )!;
 }
 
 /**
  * Convert AST to SQL condition
  */
-function astToCondition(ast: ASTNode, table: typeof oracleCards): SQL | null {
+function astToCondition(
+  ast: ASTNode,
+  oracleTable: typeof oracleCards,
+  defaultTable?: typeof defaultCards
+): SQL | null {
   switch (ast.type) {
     case "AND":
-      const leftAnd = astToCondition(ast.left, table);
-      const rightAnd = astToCondition(ast.right, table);
+      const leftAnd = astToCondition(ast.left, oracleTable, defaultTable);
+      const rightAnd = astToCondition(ast.right, oracleTable, defaultTable);
       if (!leftAnd) return rightAnd;
       if (!rightAnd) return leftAnd;
       return and(leftAnd, rightAnd)!;
 
     case "OR":
-      const leftOr = astToCondition(ast.left, table);
-      const rightOr = astToCondition(ast.right, table);
+      const leftOr = astToCondition(ast.left, oracleTable, defaultTable);
+      const rightOr = astToCondition(ast.right, oracleTable, defaultTable);
       if (!leftOr) return rightOr;
       if (!rightOr) return leftOr;
       return or(leftOr, rightOr)!;
 
     case "NOT":
-      const operand = astToCondition(ast.operand, table);
+      const operand = astToCondition(ast.operand, oracleTable, defaultTable);
       if (!operand) return null;
       return not(operand);
 
     case "FIELD":
-      return fieldToCondition(ast, table);
+      return fieldToCondition(ast, oracleTable, defaultTable);
 
     case "PLAIN_TEXT":
-      return plainTextToCondition(ast, table);
+      return plainTextToCondition(ast, oracleTable, defaultTable);
 
     default:
       return null;
@@ -725,38 +956,149 @@ export function parseQuery(query: string): ASTNode {
     if (tokens.length === 0) {
       throw new Error("Query contains no valid tokens");
     }
-    return parse(tokens);
-  } catch (error) {
-    throw new Error(
-      `Query parsing error: ${
-        error instanceof Error ? error.message : String(error)
-      }`
+    const ast = parse(tokens);
+    console.error(
+      `[SEARCH] Parsed query "${query}" into AST:`,
+      JSON.stringify(ast, null, 2)
     );
+    return ast;
+  } catch (error) {
+    const errorMsg = `Query parsing error: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+    console.error(`[SEARCH] Parse error for query "${query}":`, errorMsg);
+    throw new Error(errorMsg);
   }
 }
 
 /**
  * Search oracle cards with parsed query
+ * Always uses default_cards joined with oracle_cards
  */
 export async function searchOracleCards(
   query: string,
   limit: number = 20
 ): Promise<any[]> {
-  const ast = parseQuery(query);
-  const condition = astToCondition(ast, oracleCards);
+  console.error(
+    `[SEARCH] Starting searchOracleCards with query: "${query}", limit: ${limit}`
+  );
 
-  if (!condition) {
-    // If no valid conditions, return empty results
-    return [];
+  try {
+    const ast = parseQuery(query);
+
+    // Always use default_cards joined with oracle_cards
+    const condition = astToCondition(ast, oracleCards, defaultCards);
+
+    if (!condition) {
+      console.error(`[SEARCH] No condition generated for query: "${query}"`);
+      return [];
+    }
+
+    console.error(`[SEARCH] Generated condition for query: "${query}"`);
+
+    // Join default_cards with oracle_cards
+    // Use DISTINCT on oracle_id to avoid duplicates from multiple printings
+    // We'll use a raw SQL approach for better control
+    console.error(`[SEARCH] Executing SQL query...`);
+    let results;
+    try {
+      results = await db.execute(sql`
+        SELECT DISTINCT
+          oc.oracle_id as "oracleId",
+          oc.name,
+          oc.mana_cost as "manaCost",
+          oc.cmc,
+          oc.type_line as "typeLine",
+          oc.oracle_text as "oracleText",
+          oc.colors,
+          oc.color_identity as "colorIdentity",
+          oc.keywords,
+          oc.legalities,
+          dc.id as "setId",
+          dc."set",
+          dc.set_name as "setName",
+          dc.rarity,
+          (dc.data->>'power') as power,
+          (dc.data->>'toughness') as toughness
+        FROM default_cards dc
+        INNER JOIN oracle_cards oc ON dc.oracle_id = oc.oracle_id
+        WHERE ${condition}
+        LIMIT ${limit}
+      `);
+      console.error(
+        `[SEARCH] SQL query executed successfully, got ${results.rows.length} rows`
+      );
+    } catch (dbError: any) {
+      console.error(`[SEARCH] Database error executing query:`, {
+        error: dbError?.message,
+        code: dbError?.code,
+        detail: dbError?.detail,
+        stack: dbError?.stack,
+      });
+      throw new Error(
+        `Database query failed: ${dbError?.message || String(dbError)}`
+      );
+    }
+
+    // Convert raw results to objects
+    const mappedResults = results.rows.map((row: any) => ({
+      oracleId: row.oracleId,
+      name: row.name,
+      manaCost: row.manaCost,
+      cmc: row.cmc,
+      typeLine: row.typeLine,
+      oracleText: row.oracleText,
+      colors: row.colors,
+      colorIdentity: row.colorIdentity,
+      keywords: row.keywords,
+      legalities: row.legalities,
+      setId: row.setId,
+      set: row.set,
+      setName: row.setName,
+      rarity: row.rarity,
+      power: row.power,
+      toughness: row.toughness,
+    }));
+
+    console.error(
+      `[SEARCH] Query "${query}" returned ${mappedResults.length} results`
+    );
+    return mappedResults;
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    console.error(
+      `[SEARCH] Error in searchOracleCards for query "${query}":`,
+      errorMsg
+    );
+    throw error;
   }
+}
 
-  const results = await db
-    .select()
-    .from(oracleCards)
-    .where(condition)
-    .limit(limit);
-
-  return results;
+/**
+ * Check if the AST contains fields that require default_cards (power, toughness)
+ */
+function checkNeedsDefaultCards(ast: ASTNode): boolean {
+  switch (ast.type) {
+    case "AND":
+    case "OR":
+      return (
+        checkNeedsDefaultCards(ast.left) || checkNeedsDefaultCards(ast.right)
+      );
+    case "NOT":
+      return checkNeedsDefaultCards(ast.operand);
+    case "FIELD":
+      const field = ast.field.toLowerCase();
+      return (
+        field === "power" ||
+        field === "pow" ||
+        field === "toughness" ||
+        field === "tou"
+      );
+    case "PLAIN_TEXT":
+      return false;
+    default:
+      return false;
+  }
 }
 
 /**

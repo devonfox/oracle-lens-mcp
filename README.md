@@ -12,19 +12,59 @@ A Model Context Protocol (MCP) server for Magic: The Gathering oracle card searc
 
 ## Setup
 
-1. Install dependencies:
+1. **Install dependencies:**
 
 ```bash
 npm install
 ```
 
-1. Build the project:
+1. **Set up PostgreSQL database:**
+
+   Create a PostgreSQL database (if you don't have one):
+
+   ```bash
+   createdb mtg
+   ```
+
+   Or using `psql`:
+
+   ```sql
+   CREATE DATABASE mtg;
+   ```
+
+1. **Configure environment variables:**
+
+   Create a `.env` file in the project root:
+
+   ```bash
+   # PostgreSQL Database Connection
+   DATABASE_URL=postgresql://localhost:5432/mtg
+
+   # Optional: MCP Server Port (if not set, server runs in stdio mode)
+   # MCP_PORT=3000
+   ```
+
+   If your PostgreSQL requires authentication:
+
+   ```bash
+   DATABASE_URL=postgresql://username:password@localhost:5432/mtg
+   ```
+
+1. **Build the project:**
 
 ```bash
 npm run build
 ```
 
-1. Run the server:
+1. **Load the card data:**
+
+```bash
+npm run load-data
+```
+
+This will download and load both Oracle Cards and Default Cards from Scryfall (takes several minutes on first run).
+
+1. **Run the server:**
 
 The server supports two transport modes:
 
@@ -159,15 +199,35 @@ The HTTP server implements the MCP Streamable HTTP protocol:
 
 ## Database Setup
 
-The server uses SQLite with Drizzle ORM. The database will be automatically
-created at `db/mtg.db` on first run, and tables will be created automatically if
-migrations don't exist.
+The server uses PostgreSQL with Drizzle ORM. You'll need a PostgreSQL database
+running (version 12 or higher recommended).
 
-The database contains two main tables:
+### Database Connection
+
+The database connection is configured via the `DATABASE_URL` environment variable.
+You can set this in a `.env` file or as an environment variable:
+
+```bash
+DATABASE_URL=postgresql://[user[:password]@][host][:port][/database]
+```
+
+**Examples:**
+
+- Local database: `postgresql://localhost:5432/mtg`
+- With authentication: `postgresql://myuser:mypassword@localhost:5432/mtg`
+- Remote database: `postgresql://user:pass@db.example.com:5432/mtg`
+
+### Database Schema
+
+The database contains three main tables:
 
 - **oracle_cards**: One record per Oracle card (unique rules object) - used for
-  text/rules-based queries
-- **default_cards**: One record per card printing - used for set-specific and printing-level queries
+  text/rules-based queries. Contains ~36k cards.
+- **default_cards**: One record per card printing - used for set-specific and printing-level queries.
+  Contains ~110k card printings.
+- **inventory**: User's collection (oracle_id, qty, tags, location)
+
+Tables are automatically created on first run via Drizzle migrations.
 
 ### Loading Data
 
@@ -191,12 +251,17 @@ datasets. Oracle Cards are loaded first since Default Cards reference them via
 
 ### Generating Migrations
 
-To generate new migrations after schema changes:
+If you modify the schema in `src/db/schema.ts`, generate new migrations:
 
 ```bash
+# Generate migration files
 npx drizzle-kit generate
+
+# Apply migrations to database
 npx drizzle-kit migrate
 ```
+
+**Note:** Migrations are automatically applied when the server starts or when running `npm run load-data`.
 
 ## MCP Tools
 
@@ -353,10 +418,10 @@ Import a collection from MTGGoldfish format (coming soon).
 
 ### Environment Variables
 
-| Variable   | Description                                                       | Default        |
-| ---------- | ----------------------------------------------------------------- | -------------- |
-| `MCP_PORT` | Port number for HTTP mode. If not set, server runs in stdio mode. | (none - stdio) |
-| `DB_PATH`  | Path to SQLite database file                                      | `db/mtg.db`    |
+| Variable       | Description                                                       | Default                           |
+| -------------- | ----------------------------------------------------------------- | --------------------------------- |
+| `MCP_PORT`     | Port number for HTTP mode. If not set, server runs in stdio mode. | (none - stdio)                    |
+| `DATABASE_URL` | PostgreSQL connection string                                      | `postgresql://localhost:5432/mtg` |
 
 ### Transport Mode Selection
 
@@ -380,11 +445,11 @@ MCP_PORT=3000 npm start
 # HTTP mode on custom port
 MCP_PORT=8080 npm start
 
-# Custom database path
-DB_PATH=/custom/path/mtg.db npm start
+# Custom database URL
+DATABASE_URL=postgresql://user:password@localhost:5432/mtg npm start
 
 # Combine options
-MCP_PORT=3000 DB_PATH=/custom/path/mtg.db npm start
+MCP_PORT=3000 DATABASE_URL=postgresql://user:password@localhost:5432/mtg npm start
 ```
 
 ## Connecting MCP Clients
@@ -479,6 +544,44 @@ MCP_PORT=3000 npm start
 - Check that color filters use the correct format: `c:red` or `c:R` (not `c:Red`)
 - Keywords are case-insensitive: `k:haste` works the same as `k:Haste`
 
-### Database not found
+### Database connection errors
 
-The database is automatically created on first run. If you need to reset it, delete `db/mtg.db` and restart the server.
+- **"connection refused"**: Make sure PostgreSQL is running:
+
+  ```bash
+  # macOS (Homebrew)
+  brew services start postgresql
+
+  # Linux (systemd)
+  sudo systemctl start postgresql
+
+  # Or check if it's running
+  pg_isready
+  ```
+
+- **"database does not exist"**: Create the database:
+
+  ```bash
+  createdb mtg
+  ```
+
+- **"authentication failed"**: Check your `DATABASE_URL` includes correct username and password:
+
+  ```bash
+  DATABASE_URL=postgresql://username:password@localhost:5432/mtg
+  ```
+
+- **Migration errors**: If you see migration syntax errors, you may have old SQLite migrations. Delete
+  `db/migrations/` and regenerate:
+
+  ```bash
+  rm -rf db/migrations/*
+  npx drizzle-kit generate
+  ```
+
+### Empty search results
+
+- Make sure you've loaded the data: `npm run load-data`
+- Check that color filters use the correct format: `c:red` or `c:R` (not `c:Red`)
+- Keywords are case-insensitive: `k:haste` works the same as `k:Haste`
+- Verify your database has data: `psql mtg -c "SELECT COUNT(*) FROM oracle_cards;"`
