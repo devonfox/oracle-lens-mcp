@@ -38,8 +38,16 @@ export async function initializeDatabase() {
     if (error?.code === "ENOENT" || error?.message?.includes("migrations")) {
       console.error("Migrations folder not found, creating tables...");
       createTables();
+    } else if (
+      error?.cause?.code === "SQLITE_ERROR" &&
+      error?.cause?.message?.includes("already exists")
+    ) {
+      // Table already exists (e.g., created by load script), this is fine
+      console.error("Migration skipped: table already exists");
     } else {
       console.error("Error initializing database:", error);
+      // Re-throw non-recoverable errors
+      throw error;
     }
   }
 }

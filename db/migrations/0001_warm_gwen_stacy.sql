@@ -1,4 +1,4 @@
-CREATE TABLE `default_cards` (
+CREATE TABLE IF NOT EXISTS `default_cards` (
 	`id` text PRIMARY KEY NOT NULL,
 	`oracle_id` text,
 	`name` text NOT NULL,
@@ -14,6 +14,9 @@ CREATE TABLE `default_cards` (
 	`data` text,
 	FOREIGN KEY (`oracle_id`) REFERENCES `oracle_cards`(`oracle_id`) ON UPDATE no action ON DELETE no action
 );
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS `idx_default_cards_oracle_id` ON `default_cards` (`oracle_id`);
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS `idx_default_cards_set` ON `default_cards` (`set`);
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS `idx_default_cards_name` ON `default_cards` (`name`);
