@@ -448,6 +448,17 @@ function fieldToCondition(
     format: "format",
     banned: "banned",
     restricted: "restricted",
+    // Set code (only in default_cards)
+    e: "set_code",
+    edition: "set_code",
+    s: "set_code",
+    set: "set_code",
+    // Set name (only in default_cards)
+    setname: "set_name",
+    set_name: "set_name",
+    // Rarity (only in default_cards)
+    r: "rarity",
+    rarity: "rarity",
     // Power/Toughness (only in default_cards)
     pow: "power",
     power: "power",
@@ -815,6 +826,103 @@ function fieldToCondition(
     )`;
   }
 
+  // Handle set code field (e: for edition, also supports s: and set: as aliases)
+  // Set code is only available in default_cards table
+  if (normalizedField === "set_code") {
+    if (!defaultTable) {
+      return null; // Set code only available in default_cards
+    }
+    const setCode = value.toUpperCase(); // Set codes are typically uppercase (e.g., "CMM", "M21")
+    console.error(`[SEARCH] Set code search: looking for "${setCode}"`);
+    // Use case-insensitive search - compare both sides as uppercase
+    // The set code in the database might be stored in any case
+    return sql`UPPER(COALESCE(dc."set", '')) = UPPER(${setCode})`;
+  }
+
+  // Handle set name field (setname: or set_name:)
+  // Set name is only available in default_cards table
+  if (normalizedField === "set_name") {
+    if (!defaultTable) {
+      return null; // Set name only available in default_cards
+    }
+    const setNameLower = value.toLowerCase();
+    // Use case-insensitive partial match for set names
+    return sql`LOWER(dc.set_name) LIKE ${`%${setNameLower}%`}`;
+  }
+
+  // Handle rarity field (r: or rarity:)
+  // Rarity is only available in default_cards table
+  // Valid rarities: common, uncommon, rare, mythic, special, bonus
+  if (normalizedField === "rarity") {
+    if (!defaultTable) {
+      return null; // Rarity only available in default_cards
+    }
+    const rarityLower = value.toLowerCase();
+    // Valid rarity values
+    const validRarities = [
+      "common",
+      "uncommon",
+      "rare",
+      "mythic",
+      "special",
+      "bonus",
+    ];
+
+    if (!validRarities.includes(rarityLower)) {
+      console.error(
+        `[SEARCH] Invalid rarity value: "${value}", valid values are: ${validRarities.join(
+          ", "
+        )}`
+      );
+      return null;
+    }
+
+    // Support comparison operators for rarity ordering
+    // Order: common < uncommon < rare < mythic < special < bonus
+    const rarityOrder: Record<string, number> = {
+      common: 1,
+      uncommon: 2,
+      rare: 3,
+      mythic: 4,
+      special: 5,
+      bonus: 6,
+    };
+
+    const targetOrder = rarityOrder[rarityLower];
+
+    // For exact match (most common case)
+    if (operator === "=" || operator === "") {
+      return sql`LOWER(dc.rarity) = ${rarityLower}`;
+    }
+
+    // For comparison operators, use CASE statement to convert rarity to numeric order
+    const caseStatement = sql.raw(`CASE LOWER(dc.rarity) 
+      WHEN 'common' THEN 1 
+      WHEN 'uncommon' THEN 2 
+      WHEN 'rare' THEN 3 
+      WHEN 'mythic' THEN 4 
+      WHEN 'special' THEN 5 
+      WHEN 'bonus' THEN 6 
+      ELSE 0 END`);
+
+    if (operator === ">=") {
+      // Rarity >= target (e.g., rarity>=rare means rare, mythic, special, bonus)
+      return sql`${caseStatement} >= ${targetOrder}`;
+    } else if (operator === "<=") {
+      // Rarity <= target (e.g., rarity<=rare means common, uncommon, rare)
+      return sql`${caseStatement} <= ${targetOrder}`;
+    } else if (operator === ">") {
+      return sql`${caseStatement} > ${targetOrder}`;
+    } else if (operator === "<") {
+      return sql`${caseStatement} < ${targetOrder}`;
+    } else if (operator === "!=" || operator === "!") {
+      return sql`LOWER(dc.rarity) != ${rarityLower}`;
+    } else {
+      // Default to exact match
+      return sql`LOWER(dc.rarity) = ${rarityLower}`;
+    }
+  }
+
   // Handle format legality fields
   // Common format names (whitelist to prevent SQL injection)
   const validFormats = [
@@ -995,36 +1103,90 @@ export async function searchOracleCards(
     }
 
     console.error(`[SEARCH] Generated condition for query: "${query}"`);
+    console.error(
+      `[SEARCH] Condition type:`,
+      typeof condition,
+      condition?.constructor?.name
+    );
+
+    // Check if query includes set-specific filters (set code, rarity, etc.)
+    // If so, we should return all matching printings, not just distinct oracle_ids
+    const hasSetSpecificFilters = checkHasSetSpecificFilters(ast);
 
     // Join default_cards with oracle_cards
-    // Use DISTINCT on oracle_id to avoid duplicates from multiple printings
-    // We'll use a raw SQL approach for better control
+    // Use DISTINCT ON oracle_id only if we don't have set-specific filters
+    // Otherwise, return all matching printings
     console.error(`[SEARCH] Executing SQL query...`);
+    console.error(
+      `[SEARCH] Has set-specific filters: ${hasSetSpecificFilters}`
+    );
     let results;
     try {
-      results = await db.execute(sql`
-        SELECT DISTINCT
-          oc.oracle_id as "oracleId",
-          oc.name,
-          oc.mana_cost as "manaCost",
-          oc.cmc,
-          oc.type_line as "typeLine",
-          oc.oracle_text as "oracleText",
-          oc.colors,
-          oc.color_identity as "colorIdentity",
-          oc.keywords,
-          oc.legalities,
-          dc.id as "setId",
-          dc."set",
-          dc.set_name as "setName",
-          dc.rarity,
-          (dc.data->>'power') as power,
-          (dc.data->>'toughness') as toughness
-        FROM default_cards dc
-        INNER JOIN oracle_cards oc ON dc.oracle_id = oc.oracle_id
-        WHERE ${condition}
-        LIMIT ${limit}
-      `);
+      let querySql;
+      if (hasSetSpecificFilters) {
+        // When filtering by set-specific fields, return all matching printings
+        // Use DISTINCT ON to get one result per oracle_id
+        // ORDER BY must start with the DISTINCT ON columns, then we can order by other fields
+        querySql = sql`
+          SELECT DISTINCT ON (oc.oracle_id)
+            oc.oracle_id as "oracleId",
+            oc.name,
+            oc.mana_cost as "manaCost",
+            oc.cmc,
+            oc.type_line as "typeLine",
+            oc.oracle_text as "oracleText",
+            oc.colors,
+            oc.color_identity as "colorIdentity",
+            oc.keywords,
+            oc.legalities,
+            dc.id as "setId",
+            dc."set",
+            dc.set_name as "setName",
+            dc.rarity,
+            (dc.data->>'power') as power,
+            (dc.data->>'toughness') as toughness
+          FROM default_cards dc
+          INNER JOIN oracle_cards oc ON dc.oracle_id = oc.oracle_id
+          WHERE ${condition}
+          ORDER BY oc.oracle_id, 
+            CASE LOWER(COALESCE(dc.rarity, ''))
+              WHEN 'mythic' THEN 1
+              WHEN 'rare' THEN 2
+              WHEN 'uncommon' THEN 3
+              WHEN 'common' THEN 4
+              ELSE 5
+            END
+          LIMIT ${limit}
+        `;
+      } else {
+        // For general queries, use simple DISTINCT
+        querySql = sql`
+          SELECT DISTINCT
+            oc.oracle_id as "oracleId",
+            oc.name,
+            oc.mana_cost as "manaCost",
+            oc.cmc,
+            oc.type_line as "typeLine",
+            oc.oracle_text as "oracleText",
+            oc.colors,
+            oc.color_identity as "colorIdentity",
+            oc.keywords,
+            oc.legalities,
+            dc.id as "setId",
+            dc."set",
+            dc.set_name as "setName",
+            dc.rarity,
+            (dc.data->>'power') as power,
+            (dc.data->>'toughness') as toughness
+          FROM default_cards dc
+          INNER JOIN oracle_cards oc ON dc.oracle_id = oc.oracle_id
+          WHERE ${condition}
+          LIMIT ${limit}
+        `;
+      }
+      // Log the query structure (Drizzle SQL objects don't have a simple toString)
+      console.error(`[SEARCH] Query prepared, executing...`);
+      results = await db.execute(querySql);
       console.error(
         `[SEARCH] SQL query executed successfully, got ${results.rows.length} rows`
       );
@@ -1075,6 +1237,40 @@ export async function searchOracleCards(
 }
 
 /**
+ * Check if query includes set-specific filters (set code, rarity, etc.)
+ * These filters require returning actual printings, not just distinct oracle cards
+ */
+function checkHasSetSpecificFilters(ast: ASTNode): boolean {
+  switch (ast.type) {
+    case "AND":
+    case "OR":
+      return (
+        checkHasSetSpecificFilters(ast.left) ||
+        checkHasSetSpecificFilters(ast.right)
+      );
+    case "NOT":
+      return checkHasSetSpecificFilters(ast.operand);
+    case "FIELD":
+      const field = ast.field.toLowerCase();
+      return (
+        field === "set_code" ||
+        field === "set_name" ||
+        field === "rarity" ||
+        field === "e" ||
+        field === "edition" ||
+        field === "s" ||
+        field === "set" ||
+        field === "setname" ||
+        field === "r"
+      );
+    case "PLAIN_TEXT":
+      return false;
+    default:
+      return false;
+  }
+}
+
+/**
  * Check if the AST contains fields that require default_cards (power, toughness)
  */
 function checkNeedsDefaultCards(ast: ASTNode): boolean {
@@ -1092,7 +1288,10 @@ function checkNeedsDefaultCards(ast: ASTNode): boolean {
         field === "power" ||
         field === "pow" ||
         field === "toughness" ||
-        field === "tou"
+        field === "tou" ||
+        field === "set_code" ||
+        field === "set_name" ||
+        field === "rarity"
       );
     case "PLAIN_TEXT":
       return false;

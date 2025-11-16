@@ -5,8 +5,25 @@ import { migrate } from "drizzle-orm/node-postgres/migrator";
 import path from "path";
 
 // Database connection URL
+// Note: dotenv should be loaded in index.ts before this module is imported
 const DATABASE_URL =
   process.env.DATABASE_URL || "postgresql://localhost:5432/mtg";
+
+// Log the database URL (without password) for debugging
+if (process.env.DATABASE_URL) {
+  const urlObj = new URL(process.env.DATABASE_URL);
+  const safeUrl = `${urlObj.protocol}//${
+    urlObj.username ? urlObj.username + "@" : ""
+  }${urlObj.host}${urlObj.pathname}`;
+  console.error(`Using DATABASE_URL: ${safeUrl}`);
+} else {
+  console.error(
+    "DATABASE_URL not set, using default: postgresql://localhost:5432/mtg"
+  );
+  console.error(
+    "Note: If you see authentication errors, create a .env file with DATABASE_URL"
+  );
+}
 
 // Create PostgreSQL connection pool
 const pool = new Pool({
@@ -29,20 +46,67 @@ export async function initializeDatabase() {
     try {
       await testClient.query("SELECT 1");
       console.error("Database connection successful");
+    } catch (connError: any) {
+      // Provide helpful error message for connection issues
+      if (connError?.code === "28000" || connError?.message?.includes("role")) {
+        console.error("\n=== DATABASE CONNECTION ERROR ===");
+        console.error(`Authentication failed: ${connError?.message}`);
+        console.error(
+          "\nTo fix this, create a .env file in the project root with:"
+        );
+        console.error(
+          "  DATABASE_URL=postgresql://YOUR_USERNAME@localhost:5432/mtg"
+        );
+        console.error("\nOr if your PostgreSQL requires a password:");
+        console.error(
+          "  DATABASE_URL=postgresql://YOUR_USERNAME:YOUR_PASSWORD@localhost:5432/mtg"
+        );
+        console.error("\nTo find your PostgreSQL username, try:");
+        console.error("  psql -l  # or: whoami");
+        console.error("===========================\n");
+      }
+      throw connError;
     } finally {
       testClient.release();
     }
 
+    // Resolve migrations path - handle both source and build directories
     const migrationsPath = path.join(process.cwd(), "db/migrations");
+    console.error(`Looking for migrations at: ${migrationsPath}`);
+
     await migrate(db, {
       migrationsFolder: migrationsPath,
     });
     console.error("Database initialized successfully");
   } catch (error: any) {
-    // If migrations folder doesn't exist yet, create tables manually
-    if (error?.code === "ENOENT" || error?.message?.includes("migrations")) {
-      console.error("Migrations folder not found, creating tables...");
-      await createTables();
+    // Check if this is a migration file error (missing _journal.json or migrations folder)
+    const isMigrationError =
+      error?.code === "ENOENT" ||
+      error?.message?.includes("migrations") ||
+      error?.message?.includes("_journal.json") ||
+      error?.message?.includes("Can't find meta");
+
+    if (isMigrationError) {
+      console.error(
+        "Migrations not found or incomplete, creating tables directly..."
+      );
+      console.error(`Migration error: ${error?.message}`);
+      try {
+        await createTables();
+        console.error("Tables created successfully");
+        return; // Successfully created tables, exit early
+      } catch (createError: any) {
+        // If createTables fails, check if tables already exist
+        if (
+          createError?.code === "42P07" ||
+          createError?.message?.includes("already exists")
+        ) {
+          console.error("Tables already exist, skipping creation");
+          return; // Tables exist, that's fine
+        }
+        // Re-throw if it's a different error
+        throw createError;
+      }
     } else if (
       error?.code === "42P07" ||
       error?.message?.includes("already exists")

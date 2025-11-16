@@ -1,4 +1,34 @@
-import "dotenv/config";
+// Load .env file to check for MCP_PORT and other config
+// We need to check MCP_PORT early to determine which mode to run in
+// When run via Claude Desktop (stdio mode), stdin is a pipe (not a TTY), so we skip .env
+// When run directly (npm start), stdin might be a TTY, so we can safely load .env
+// This prevents JSON-RPC protocol issues in stdio mode
+import dotenv from "dotenv";
+import path from "path";
+import { fileURLToPath } from "url";
+import { dirname } from "path";
+import { isatty } from "node:tty";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const projectRoot = path.resolve(__dirname, "..");
+const envPath = path.join(projectRoot, ".env");
+
+// Detect if we're in stdio mode (stdin is a pipe, not a TTY)
+// When Claude Desktop runs the server, stdin is a pipe for JSON-RPC communication
+// When run directly, stdin might be a TTY (interactive terminal)
+const isStdioMode = !isatty(0); // 0 = stdin file descriptor
+
+// Only load .env if:
+// 1. We're NOT in stdio mode (stdin is a TTY, meaning we're run directly)
+// 2. AND MCP_PORT is not already set (allows override via shell env)
+// This way, when run via Claude Desktop, we skip .env to avoid JSON-RPC issues
+// But when run directly (npm start), we load .env to get MCP_PORT if it's there
+if (!isStdioMode && !process.env.MCP_PORT) {
+  // Silently load .env - don't log to avoid breaking JSON-RPC
+  dotenv.config({ path: envPath });
+}
+
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -65,27 +95,34 @@ BASIC FIELDS:
 - Keywords: k:, kw:, or keyword: (e.g., k:haste, kw:flying, keyword:lifelink)
 
 COLORS AND COLOR IDENTITY:
-- Colors: c:, color:, or colors: (e.g., c:red, c:R, c:WUBRG)
+- Colors: c: or color: (e.g., c:red, c:R, c:WUBRG)
   Operators: =, <= (subset), >= (superset), != (not equal)
   Examples: c:red, c>=W, c<=WUG, c!=blue
-- Color Identity: ci:, id:, identity:, or color_identity: (same syntax as colors)
-  Examples: ci:WUG, id:esper, identity<=azorius
+  Special values: c:colorless or c:c, c:multicolor or c:m
+- Color Identity: id: or identity: (also ci: or color_identity: as aliases)
+  Same syntax as colors, supports guild/shard/wedge names
+  Examples: id:WUG, id:esper, identity<=azorius, ci:azorius
 - Named Combinations: Use guild/shard/wedge names directly
   Guilds: azorius, dimir, rakdos, gruul, selesnya, orzhov, izzet, golgari, boros, simic
   Shards: bant, esper, grixis, jund, naya
   Wedges: abzan, jeskai, sultai, mardu, temur
   Four-color: chaos, aggression, altruism, growth, artifice
   Colleges: quandrix, silverquill, witherbloom, prismari, lorehold
-  Examples: c:esper, ci<=azorius, id:bant
-- Special Values: c:colorless or c:c, c:multicolor or c:m
+  Examples: c:esper, id<=azorius, id:bant
 
 MANA COSTS:
-- Converted Mana Cost: cmc:, mv:, or manavalue:
+- Mana Value: mv: or manavalue: (also cmc: as alias)
   Operators: =, <=, >=, <, >, !=
-  Special values: cmc:even, cmc:odd
-  Examples: cmc:3, cmc<=2, mv>=5, cmc:even
+  Special values: mv:even, mv:odd
+  Examples: mv:3, mv<=2, mv>=5, mv:even, cmc:3
 - Mana Cost: m: or mana: (actual cost string)
   Examples: m:{R}{R}, mana:2WW, m:{G}{U}
+
+SETS:
+- Set Code: e: or edition: (also s: or set: as aliases) - Search by set code (e.g., "CMM", "M21", "MH2")
+  Examples: e:CMM, edition:m21, e:MH2, s:CMM, set:m21
+- Set Name: setname: or set_name: - Search by set name (partial match)
+  Examples: setname:Commander, set_name:Modern Horizons
 
 FORMAT LEGALITY:
 - Format: f: or format: (e.g., f:modern, f:commander, f:standard)
@@ -100,11 +137,12 @@ LOGICAL OPERATORS:
 - Plain Text: If no field specified, searches name and oracle text - e.g., Lightning
 
 EXAMPLES:
-- "t:creature c:red k:haste cmc<=3"
-- "f:modern -banned:modern cmc>=4"
+- "t:creature c:red kw:haste mv<=3"
+- "f:modern -banned:modern mv>=4"
 - "(t:instant OR t:sorcery) c:blue o:counter"
-- "id:esper t:instant cmc:even"
-- "m:{R}{R} cmc<=4 t:creature"`,
+- "id:esper t:instant mv:even"
+- "m:{R}{R} mv<=4 t:creature"
+- "e:CMM id:wug pow>=4"`,
               },
               limit: {
                 type: "number",
@@ -133,27 +171,34 @@ BASIC FIELDS:
 - Keywords: k:, kw:, or keyword: (e.g., k:haste, kw:flying, keyword:lifelink)
 
 COLORS AND COLOR IDENTITY:
-- Colors: c:, color:, or colors: (e.g., c:red, c:R, c:WUBRG)
+- Colors: c: or color: (e.g., c:red, c:R, c:WUBRG)
   Operators: =, <= (subset), >= (superset), != (not equal)
   Examples: c:red, c>=W, c<=WUG, c!=blue
-- Color Identity: ci:, id:, identity:, or color_identity: (same syntax as colors)
-  Examples: ci:WUG, id:esper, identity<=azorius
+  Special values: c:colorless or c:c, c:multicolor or c:m
+- Color Identity: id: or identity: (also ci: or color_identity: as aliases)
+  Same syntax as colors, supports guild/shard/wedge names
+  Examples: id:WUG, id:esper, identity<=azorius, ci:azorius
 - Named Combinations: Use guild/shard/wedge names directly
   Guilds: azorius, dimir, rakdos, gruul, selesnya, orzhov, izzet, golgari, boros, simic
   Shards: bant, esper, grixis, jund, naya
   Wedges: abzan, jeskai, sultai, mardu, temur
   Four-color: chaos, aggression, altruism, growth, artifice
   Colleges: quandrix, silverquill, witherbloom, prismari, lorehold
-  Examples: c:esper, ci<=azorius, id:bant
-- Special Values: c:colorless or c:c, c:multicolor or c:m
+  Examples: c:esper, id<=azorius, id:bant
 
 MANA COSTS:
-- Converted Mana Cost: cmc:, mv:, or manavalue:
+- Mana Value: mv: or manavalue: (also cmc: as alias)
   Operators: =, <=, >=, <, >, !=
-  Special values: cmc:even, cmc:odd
-  Examples: cmc:3, cmc<=2, mv>=5, cmc:even
+  Special values: mv:even, mv:odd
+  Examples: mv:3, mv<=2, mv>=5, mv:even, cmc:3
 - Mana Cost: m: or mana: (actual cost string)
   Examples: m:{R}{R}, mana:2WW, m:{G}{U}
+
+SETS:
+- Set Code: e: or edition: (also s: or set: as aliases) - Search by set code (e.g., "CMM", "M21", "MH2")
+  Examples: e:CMM, edition:m21, e:MH2, s:CMM, set:m21
+- Set Name: setname: or set_name: - Search by set name (partial match)
+  Examples: setname:Commander, set_name:Modern Horizons
 
 FORMAT LEGALITY:
 - Format: f: or format: (e.g., f:modern, f:commander, f:standard)
@@ -168,11 +213,12 @@ LOGICAL OPERATORS:
 - Plain Text: If no field specified, searches name and oracle text - e.g., Lightning
 
 EXAMPLES:
-- "t:creature c:red k:haste cmc<=3"
-- "f:modern -banned:modern cmc>=4"
+- "t:creature c:red kw:haste mv<=3"
+- "f:modern -banned:modern mv>=4"
 - "(t:instant OR t:sorcery) c:blue o:counter"
-- "id:esper t:instant cmc:even"
-- "m:{R}{R} cmc<=4 t:creature"`,
+- "id:esper t:instant mv:even"
+- "m:{R}{R} mv<=4 t:creature"
+- "e:CMM id:wug pow>=4"`,
               },
               limit: {
                 type: "number",
